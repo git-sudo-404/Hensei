@@ -47,7 +47,7 @@ Separate groups in a layer can be scheduled in parallel with respect to the extr
 
 Language coverage follows Graphify's extractors. Dynamic imports, reflection, generated code, and unresolved references can leave dependencies missing. Files absent from Graphify's nodes are not scheduled. This is a rough static plan, not a correctness guarantee or execution engine. Review unresolved-edge warnings before migration. No RAG or LLM calls are implemented in this phase.
 
-The previous Python implementation is preserved on `main`. Historical research and ignored run artifacts remain on disk. `.env` stays local and ignored; the graph pipeline needs no DeepSeek key.
+The previous Python implementation is preserved in Git history at commit `be9c710`; `main` now contains the Bun/TypeScript implementation. Historical research and ignored run artifacts remain on disk. `.env` stays local and ignored; the graph pipeline needs no DeepSeek key.
 
 ## Verification
 
