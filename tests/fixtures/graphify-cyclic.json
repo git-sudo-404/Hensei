@@ -1,0 +1,287 @@
+{
+  "nodes": [
+    {
+      "id": "a",
+      "label": "a.ts",
+      "file_type": "code",
+      "source_file": "a.ts",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "a_a",
+      "label": "a()",
+      "file_type": "code",
+      "source_file": "a.ts",
+      "source_location": "L3",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "app",
+      "label": "app.ts",
+      "file_type": "code",
+      "source_file": "app.ts",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "app_run",
+      "label": "run",
+      "file_type": "code",
+      "source_file": "app.ts",
+      "source_location": "L2",
+      "_origin": "ast"
+    },
+    {
+      "id": "b",
+      "label": "b.ts",
+      "file_type": "code",
+      "source_file": "b.ts",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "b_b",
+      "label": "b()",
+      "file_type": "code",
+      "source_file": "b.ts",
+      "source_location": "L2",
+      "_callable": true,
+      "_origin": "ast"
+    },
+    {
+      "id": "b_reference",
+      "label": "reference",
+      "file_type": "code",
+      "source_file": "b.ts",
+      "source_location": "L3",
+      "_origin": "ast"
+    },
+    {
+      "id": "base",
+      "label": "base.ts",
+      "file_type": "code",
+      "source_file": "base.ts",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "base_base",
+      "label": "base",
+      "file_type": "code",
+      "source_file": "base.ts",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "independent",
+      "label": "independent.ts",
+      "file_type": "code",
+      "source_file": "independent.ts",
+      "source_location": "L1",
+      "_origin": "ast"
+    },
+    {
+      "id": "independent_independent",
+      "label": "independent",
+      "file_type": "code",
+      "source_file": "independent.ts",
+      "source_location": "L1",
+      "_origin": "ast"
+    }
+  ],
+  "edges": [
+    {
+      "source": "a",
+      "target": "b",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "a.ts",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "a",
+      "target": "b_b",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "a.ts",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "a",
+      "target": "base",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "a.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "a",
+      "target": "base_base",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "a.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "a",
+      "target": "a_a",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "a.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app",
+      "target": "a",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "app.ts",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app",
+      "target": "a_a",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "app.ts",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app",
+      "target": "app_run",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "app.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "b",
+      "target": "a",
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "b.ts",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "b",
+      "target": "a_a",
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "b.ts",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "b",
+      "target": "b_b",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "b.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "b",
+      "target": "b_reference",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "b.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "base",
+      "target": "base_base",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "base.ts",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "independent",
+      "target": "independent_independent",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "independent.ts",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "app",
+      "target": "a",
+      "relation": "re_exports",
+      "context": "export",
+      "confidence": "EXTRACTED",
+      "source_file": "app.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "b",
+      "target": "a",
+      "relation": "re_exports",
+      "context": "export",
+      "confidence": "EXTRACTED",
+      "source_file": "b.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast"
+    },
+    {
+      "source": "a_a",
+      "target": "b_b",
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "a.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast"
+    }
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "extracted_sources": [
+    "/Users/chiranjeevprasannaavv/Desktop/MAO/hensei/examples/cyclic/a.ts",
+    "/Users/chiranjeevprasannaavv/Desktop/MAO/hensei/examples/cyclic/app.ts",
+    "/Users/chiranjeevprasannaavv/Desktop/MAO/hensei/examples/cyclic/b.ts",
+    "/Users/chiranjeevprasannaavv/Desktop/MAO/hensei/examples/cyclic/base.ts",
+    "/Users/chiranjeevprasannaavv/Desktop/MAO/hensei/examples/cyclic/independent.ts"
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "name": "hensei", "version": "0.2.0", "private": true, "type": "module",
+  "scripts": {"graph": "bun src/cli.ts graph", "order": "bun src/cli.ts order", "test": "bun test", "typecheck": "tsc --noEmit"},
+  "devDependencies": {"@types/bun": "1.3.10", "typescript": "5.9.3"}
+}

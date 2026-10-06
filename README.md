@@ -1,100 +1,59 @@
-# Hensei
+# Hensei — Bun / TypeScript
 
-Hensei is a Python → Go migration research harness. It extracts static dependencies, groups cycles, schedules configurable concurrent workers, evaluates behavior, and integrates accepted changes through a serialized Git queue.
+This branch implements repository graph extraction and migration ordering. Task-generation agents, migration workers, evaluation, and merging are deferred.
 
-The first version includes a runnable offline demonstration and a DeepSeek tool-calling adapter. The offline demo uses **prerecorded translations**, so its results test orchestration mechanics rather than LLM translation quality.
+## Setup
 
-## Quick start
-
-Requires Python 3.11+, Git, and Go for the trusted local demo. The Python package has no runtime dependencies. Commands below run directly from this checkout; no installation is required.
+Install [Bun](https://bun.sh) and [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
 
 ```sh
-PYTHONPATH=src python3 -m hensei demo --output runs/demo --workers 3 --inject-failure
-PYTHONPATH=src python3 -m hensei status runs/demo
-PYTHONPATH=src python3 -m hensei report runs/demo
+bun install
+bun run graph ./examples/cyclic --out ./artifacts/cyclic
+bun run graph /absolute/path/to/repository --out ./artifacts/repository
 ```
 
-The demo captures source behavior, starts independent workers concurrently, deliberately submits an incorrect translation, rejects it, repairs it, and migrates six dependency units. The final evaluation uses six visible and eleven held-out cases. Use a fresh output directory for each run.
+Hensei is TypeScript running on Bun. [Graphify](https://github.com/Graphify-Labs/graphify) is an external Python CLI dependency, pinned to `graphifyy==0.9.79`, invoked through uvx. The first extraction downloads its package dependencies. It runs `extract --code-only --no-cluster --force`, uses local AST extraction, and requires no model API key. Auto-refresh of installed assistant skills is disabled by Hensei.
 
-The generated target is in `runs/demo/output/target`. Inspect `tasks.json`, `state.sqlite`, `events.jsonl`, `traces/`, `repairs/`, `report.json`, and `report.md` inside the run directory. The Git integration repository is in `repo/`; temporary worker checkouts are cleaned after evaluation.
-
-## Plan a migration
+To process an existing raw, directed Graphify extraction:
 
 ```sh
-PYTHONPATH=src python3 -m hensei plan examples/shop/source --output tasks.json
+bun run order /path/to/graph.json --root /path/to/scanned/repository --out ./artifacts/order
 ```
 
-The source argument is a directory containing only the code to migrate. The supported subset has annotated top-level functions, static internal imports, immutable scalar constants, and empty/docstring package initializers. Types are `int`, `float`, `str`, `bool`, and one-dimensional `list[T]` of those primitives. Classes, dynamic imports, external dependencies, decorators, default/variadic parameters, import-time effects, and runtime introspection are rejected during planning.
+`--root` must match the source repository used by extraction, particularly when Graphify emits absolute paths. Undirected exports are rejected because they lose dependency direction.
 
-Inputs and integer intermediate/results must fit signed int64; floats must be finite. Behavioral tests compare numbers exactly, with no implicit float tolerance. Runtime exceptions are normalized to `runtime_error`; exception class equivalence is outside this version's scoring contract. These restrictions are feasibility constraints, not a claim that arbitrary Python is safely translatable.
+## Pipeline
 
-Plans embed the original source snapshot, so later edits to the original directory cannot silently change a run. Each SCC is one atomic migration unit. Target functions receive stable names and declared signatures in a shared Go package; workers exclusively own implementation files, while the controller owns the JSON bridge and module manifest.
+1. Graphify emits symbol/file nodes and relationship edges.
+2. Hensei maps symbols to `source_file` and projects `imports`, `imports_from`, `calls`, `inherits`, and `implements` onto file dependencies. Source is consumer; target is prerequisite. `contains` and semantic associations do not impose ordering. Same-file edges are ignored, duplicates removed, and unresolved/external targets reported.
+3. Iterative Kosaraju groups strongly connected components: mutually dependent files become one atomic group, without recursion limits.
+4. Batched Kahn traversal of the condensed DAG emits all dependency-ready groups as a layer, then unlocks the next layer. Every prerequisite is in an earlier layer. Traversal is O(V+E), excluding deterministic sorting.
 
-## Run DeepSeek workers
-
-Paste the key into the project-root `.env` file:
-
-```dotenv
-DEEPSEEK_API_KEY=your_actual_deepseek_api_key
+```text
+Layer 0: [base.ts] | [independent.ts]
+Layer 1: [a.ts, b.ts] (cycle)
+Layer 2: [app.ts]
 ```
 
-A blank `.env` and a `.env.example` template are provided. The CLI loads `.env` from the current working directory for `run` and `resume`. Existing terminal environment variables take precedence. To select another file, place the global option before the command: `python3 -m hensei --env-file /path/to/.env run ...`.
+Separate groups in a layer can be scheduled in parallel with respect to the extracted graph. Files inside a cyclic group must be planned together. A future scheduler could unlock individual groups when their own prerequisites finish instead of waiting at layer barriers.
 
-The `.env` file is ignored by Git. The key is consumed only when explicitly running the DeepSeek provider and is excluded from worker context and generated-code environments. `demo` continues to use prerecorded translations even when a key is present.
+## Outputs
+
+- `graphify-out/graph.json`: untouched upstream extraction.
+- `file-graph.json`: normalized files, dependencies, and warnings.
+- `migration-order.json`: group IDs, files, `cyclic`, `dependsOn`, and ordered layers. This is input for the future planning agent, not `tasks.json`.
+
+## Limits
+
+Language coverage follows Graphify's extractors. Dynamic imports, reflection, generated code, and unresolved references can leave dependencies missing. Files absent from Graphify's nodes are not scheduled. This is a rough static plan, not a correctness guarantee or execution engine. Review unresolved-edge warnings before migration. No RAG or LLM calls are implemented in this phase.
+
+The previous Python implementation is preserved on `main`. Historical research and ignored run artifacts remain on disk. `.env` stays local and ignored; the graph pipeline needs no DeepSeek key.
+
+## Verification
 
 ```sh
-PYTHONPATH=src python3 -m hensei run \
-  --plan tasks.json \
-  --cases examples/shop/visible.json \
-  --holdout examples/shop/holdout.json \
-  --output runs/live-001 \
-  --workers 3 \
-  --model deepseek-flash \
-  --max-tokens 1000000
+bun test
+bun run typecheck
 ```
 
-Docker is the default for executing the source baseline and generated target. Start your Docker daemon and provision the images before the run:
-
-```sh
-docker pull python:3.11.10-slim
-docker pull golang:1.23.2-bookworm
-```
-
-Use `HENSEI_PYTHON_IMAGE` and `HENSEI_GO_IMAGE` to select images, preferably immutable digests for experiments. Containers run without network access, as an unprivileged user, with read-only source mounts and CPU/memory/process limits. A missing daemon produces an error; the harness does not fall back to local execution. Container execution needs a running daemon and locally available images; only missing-daemon handling was verified in the initial build environment.
-
-`--runner local` explicitly runs code on your machine and should be used only with trusted code. Its subprocess environment omits controller credentials, but it is not a filesystem or process sandbox. The bundled offline demo uses this mode for its known code.
-
-Case files are arrays of `{ "id": "unique-case", "operation": "shop.base.subtotal", "args": [2, 100] }`, using operations declared by the plan. Expected results are captured from the source implementation. Visible cases must exercise every migration unit with callable operations. Workers can query visible checks; held-out cases are evaluated only after terminal execution and never enter repair feedback.
-
-## Scheduling, repair, and recovery
-
-A task runs only after its dependencies are integrated. Workers use bounded file tools; they cannot modify shared build files or run arbitrary shell commands. Separate limits control workers, build jobs, model calls, attempts, output size, and execution deadlines. `--task-timeout` applies to each worker attempt; `--run-timeout` bounds each controller execution session.
-
-Candidate checks run against a recorded base. A single integration writer applies each candidate to current HEAD, runs checks again, and promotes the exact checked tree. Failed implementations are retained under `repairs/` and restored into subsequent attempts. Failed prerequisites block their descendants rather than leaving the scheduler waiting forever.
-
-SQLite records state transitions and their events atomically. Recovery reconciles integration commit metadata with the database before restarting interrupted attempts. It restarts the task from saved artifacts rather than restoring an unfinished model conversation. Only one controller may operate a run at a time.
-
-```sh
-PYTHONPATH=src python3 -m hensei resume runs/live-001
-PYTHONPATH=src python3 -m hensei resume runs/live-001 --max-tokens 1500000
-```
-
-Scored terminal runs are frozen; start a new run for additional changes. Budget/time/infrastructure pauses do not expose held-out scores and remain resumable. Preparation failures need a new output directory after fixing the problem.
-
-The token ceiling uses conservative UTF-8-byte input reservations plus the requested output cap and returned provider usage. Requests wait for competing reservations to finish. API timeouts may have unknown billed usage; the report does not claim an exact billing ceiling. DeepSeek retries are bounded, thinking-mode continuation fields are preserved, and private reasoning is omitted from public traces.
-
-## Tests
-
-```sh
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
-
-Tests cover dependency cycles, invalid plans, scoped tools, provider continuation, budget reservations, incorrect translations, Git conflicts, current-HEAD integration, recovery, scheduling, and holdout separation. Local Go integration tests require Go; no test makes a paid API call.
-
-## Research use and current limits
-
-The report separates implementation coverage, target buildability, visible behavior, held-out behavior, tokens, repair counts, and worker overlap. `strict_success` requires complete implementation and passing visible plus held-out checks. Without a holdout, only development success is reported. A buildable skeleton alone cannot count as migration success.
-
-This version implements the deterministic orchestration and bounded translation-worker loop. Planning is static; the independent LLM reviewer, arbitrary command execution, dynamic plan revision, distributed execution, and multiple language pairs are future research extensions. Live DeepSeek inference and running-container validation were not performed during this build. Cost remains unpriced until an applicable provider tariff is supplied; do not treat demo timings as comparative paper results.
-
-Read [the research plan](MAO_V1_RESEARCH_PLAN.md) for baselines, dataset selection, experiment controls, metrics, and the semester roadmap.
+Tests cover fan-in, cycles, disconnected components, self-loops, duplicate edges, deterministic output, malformed/undirected graphs, a 15,000-file chain, and recorded real Graphify extraction of the cycle example.
