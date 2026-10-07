@@ -14,7 +14,11 @@ flowchart TD
   E -->|return with diffs / logical summaries| W
   E --> C[Merge complete coordination group into disposable tree]
   C --> B[Required build and tests]
-  B -->|pass on unchanged HEAD| I[Promote exact commit / persist receipt and versions]
+  B -->|pass on unchanged HEAD| H[Persist exact checked commit receipt]
+  H -->|local mode| I[Promote exact commit / persist versions]
+  H -->|source or new mode| PUBLISH[Scoped GitHub PR into migration branch]
+  PUBLISH --> MATCH[Merge expected head / verify target tree]
+  MATCH --> I
   I --> Q
   I --> A[Independent coverage and final-suite audit]
   A -->|gaps or failures, within budget| R[New one-file task IDs / smaller implementation substeps]
@@ -46,6 +50,14 @@ The source inventory is independent of Graphify, so extraction misses cannot dis
 
 Configured local checks can execute arbitrary program behavior. Optional Docker execution limits network, filesystem reach and resources; stronger isolation and trusted external test fixtures are required for hostile code. The model cannot emit shell commands for the host. Docker is provisioned separately; lack of an image is a failure, not a reason to fall back to host execution.
 
+## GitHub publication
+
+`repository.mode: source` derives the destination from source origin and forks its remote base into a new migration branch. Translated files occupy a dedicated empty directory; original source remains present. `mode: new` uses the configured GitHub URL and optionally creates a missing repository, private by default. Both modes preserve the original base branch. With no repository configuration, the existing local integration flow applies.
+
+The publisher receives the evaluator's exact checked commit and disposable checkout. It copies only the approved output paths into a run-owned remote clone, then requires the entire translated subtree's Git tree ID to equal the checked local tree. It opens a PR into the migration branch, verifies the PR head/base and unchanged remote base, and merges with `--match-head-commit`. It does not bypass protection or enable delayed automatic merges. The actual merged subtree and merge ancestry are checked before local acceptance; final completion also compares the remote branch with the fully audited local tree. These checks use [GitHub CLI merge semantics](https://cli.github.com/manual/gh_pr_merge).
+
+Remote publication is serial and cycle groups publish atomically. Transactions identify task IDs plus the full target tree, retaining equivalent checked-commit identities to avoid duplicate PRs during retries. Durable receipts precede publication; on resume, a merged PR can promote the retained checked commit and recover journal acceptance after a crash. An open or rejected PR supplies no acceptance proof. Concurrent external changes fail the remote checks; automatic incorporation of unrelated remote edits and hosted merge queues are not implemented.
+
 ## Research basis and boundaries
 
 The separation of context selection, bounded tools and state outside conversation follows the practical principles described in Anthropic's [context engineering article](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents). Durable progress records, incremental tasks and explicit verification are consistent with its [long-running agent harness article](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents). These are design guidance, not evidence that Hensei is correct.
@@ -56,8 +68,14 @@ For an FYP paper, compare single-agent, dependency-unaware parallel, graph-guide
 
 ## Verification recorded on 2026-10-07
 
-The automated suite includes 50 passing tests and TypeScript checks. A local synthetic run inventories 1,000 files containing 1,000,000 function-definition lines (37,780,000 bytes), with a generated file graph; it does not exercise Graphify or model translation. The files were freshly written, so this is a warm-cache measurement.
+The automated suite includes 59 passing tests and TypeScript checks. A local synthetic run inventories 1,000 files containing 1,000,000 function-definition lines (37,780,000 bytes), with a generated file graph; it does not exercise Graphify or model translation. The files were freshly written, so this is a warm-cache measurement.
 
-A real DeepSeek planning run over `examples/cyclic` produced five schema-v2 tasks, each owning one source file, with the two cycle files in one coordination group. Live execution accepted the independent file, then provider calls repeatedly failed with `ECONNRESET`. Both curl and Bun also failed unauthenticated requests to the provider origin. The run remained explicitly incomplete; it is not an end-to-end migration success result. Automated tests use injected scripted completions and real Git/build/test processes. Docker argument restrictions are tested, but a Docker daemon run is unverified.
+A real DeepSeek planning run over `examples/cyclic` produced five schema-v2 tasks, each owning one source file, with the two cycle files in one coordination group. After switching networks, the previously interrupted local run resumed to 100% included-file coverage with passing Bun compilation and configured behavioral checks. A fresh GitHub-enabled run then completed all five tasks, observed two concurrent workers within its configured cap of two, returned one stale candidate, and merged four real PRs. The cyclic pair was published together in [PR #3](https://github.com/git-sudo-404/Hensei/pull/3); the final integration is on [its migration branch](https://github.com/git-sudo-404/Hensei/tree/hensei/live-cyclic-1791364513972/migrated/cyclic). This TypeScript-to-TypeScript fixture tests orchestration and cyclic integration, not cross-language translation.
 
-The provider adapter disables connection reuse and retries body-read transport failures as well as initial connection failures. This uses [Bun's documented fetch options](https://bun.sh/docs/runtime/networking/fetch); it is a mitigation, not a diagnosis or proof that the external resets are resolved.
+A fresh Graphify-to-planner-to-executor run migrated the single JavaScript source file in `examples/evaluation/source` to TypeScript with an explicitly owned tsconfig. The initial test run remained incomplete after network failures and malformed output. Planning prompts were corrected to produce implementation assignments. The subsequent run recovered another connection reset through a fresh follow-up task, reached 100% included-file coverage, passed its compilation and numeric behavioral checks, and merged [PR #5](https://github.com/git-sudo-404/Hensei/pull/5). This is a small cross-language fixture; it does not establish production-scale migration quality.
+
+Resuming that completed JavaScript run repeated the final audit successfully, without generating another candidate or another PR. All five live PRs targeted their dedicated migration branches; none targeted `main`.
+
+Automated tests use injected scripted completions and real Git/build/test processes. GitHub publication tests exercise real local/bare Git repositories with a scripted GitHub transport, including private empty-repository initialization, refused merges, exact target-tree matching, duplicate-publication prevention and evaluator recovery after remote merge but before local acceptance. Live GitHub testing used source-repository mode; separate repository creation is covered by the scripted transport tests, not a live repository-creation experiment. Docker argument restrictions are tested, but a Docker daemon run is unverified.
+
+The provider adapter disables connection reuse and retries body-read transport failures as well as initial connection failures. This uses [Bun's documented fetch options](https://bun.sh/docs/runtime/networking/fetch). DeepSeek calls now succeed on the available connection, but intermittent resets were still observed; bounded recovery succeeded in the final JavaScript fixture run.

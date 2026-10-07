@@ -1,3 +1,4 @@
+import {Publisher} from './publisher';
 import {atomicJson} from './storage';
 import {join,relative,isAbsolute} from 'node:path';
 import {mkdir,realpath} from 'node:fs/promises';
@@ -15,7 +16,7 @@ import {runLock} from './runlock';
 import {audit,followups,type FinalAudit} from './audit';
 import {dispatchCoordinated} from './scheduler';
 export interface RunReport extends DispatchReport {finalAudit:FinalAudit;rounds:number;apiCalls:number;tokens:number;stopReason?:string}
-export async function executeTasks(destination:string,options:{complete?:Complete;evaluatorComplete?:Complete;orchestratorComplete?:Complete;onProgress?:(message:string)=>void;resume?:string}={}):Promise<{runDir:string;report:RunReport}> {
+export async function executeTasks(destination:string,options:{complete?:Complete;evaluatorComplete?:Complete;orchestratorComplete?:Complete;onProgress?:(message:string)=>void;onPullRequest?:(url:string)=>Promise<void>;resume?:string}={}):Promise<{runDir:string;report:RunReport}> {
   destination=await realpath(destination);const release=await runLock(destination);let journal:Journal|undefined;
   try {
     const config=await loadConfig(destination);
@@ -49,7 +50,8 @@ export async function executeTasks(destination:string,options:{complete?:Complet
     const role=(transport:Complete|undefined):Complete=>transport?(s,u)=>workerHarness.call(s,u,transport):complete;
     const evaluatorComplete=role(options.evaluatorComplete),orchestratorComplete=role(options.orchestratorComplete);
     const worktrees=new WorktreeManager(runDir);await worktrees.initialize();
-    const evaluator=new Evaluator(plan,runDir,config.evaluation,evaluatorComplete,worktrees,journal,runtime);await evaluator.recover();
+    const publisher=config.repository&&config.repository.mode!=='local'?new Publisher(runDir,root,config.repository,undefined,options.onPullRequest):undefined;await publisher?.initialize();
+    const evaluator=new Evaluator(plan,runDir,config.evaluation,evaluatorComplete,worktrees,journal,runtime,publisher);await evaluator.recover();
     const statuses=journal.statuses();for(const [id,status]of Object.entries(statuses))if(status==='RUNNING')journal.status(id,'PENDING');
     const eventPath=join(runDir,'events.jsonl'),lines=await Bun.file(eventPath).exists()?(await Bun.file(eventPath).text()).trim().split('\n').filter(Boolean):[];
     const history=lines.flatMap((line,index)=>{try{return [JSON.parse(line)];}catch(error){if(index===lines.length-1)return [];throw error;}});
@@ -67,6 +69,7 @@ export async function executeTasks(destination:string,options:{complete?:Complet
       total={...batch,peakActiveWorkers:Math.max(total.peakActiveWorkers,batch.peakActiveWorkers),parallelObserved:total.parallelObserved||batch.parallelObserved,events:[...total.events,...batch.events]};
       await evaluator.recover();
       finalAudit=await audit(plan,snapshot,excludes,journal,worktrees,config.evaluation);
+      if(publisher&&finalAudit.complete)try{await publisher.audit(await worktrees.tree());}catch(error){finalAudit.complete=false;finalAudit.issues.push((error as Error).message);}
       await Bun.write(join(runDir,`audit-${round}.json`),JSON.stringify(finalAudit,null,2)+'\n');journal.set('audit',finalAudit);
       options.onProgress?.(`Final audit: coverage=${finalAudit.coveragePercent.toFixed(1)}%, tests=${finalAudit.checks.every(c=>c.passed)}, complete=${finalAudit.complete}`);
       if(finalAudit.complete)break;
@@ -81,7 +84,7 @@ export async function executeTasks(destination:string,options:{complete?:Complet
       }catch(error){stopReason=(error as Error).message;break;}
     }
     const report:RunReport={...total,durationMs:performance.now()-started,finalAudit:finalAudit!,rounds:round,apiCalls:workerHarness.calls,tokens:workerHarness.tokens,...(stopReason?{stopReason}:{})};
-    await Bun.write(join(runDir,'report.json'),JSON.stringify({...report,model,candidateOnly:false,repository:worktrees.repo},null,2)+'\n');
+    await Bun.write(join(runDir,'report.json'),JSON.stringify({...report,model,candidateOnly:false,repository:worktrees.repo,publication:publisher?.summary()},null,2)+'\n');
     journal.set('complete',report.finalAudit.complete);options.onProgress?.(`Peak workers: ${report.peakActiveWorkers}/${report.limit}; complete=${report.finalAudit.complete}. Report: ${join(runDir,'report.json')}`);
     return {runDir,report};
   }finally{journal?.close();await release();}

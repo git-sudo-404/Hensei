@@ -20,3 +20,8 @@ test('worker repair returns default to three and configured maxRetries is distin
  const c=parseConfig('target: {language: Go}\nagents: {workers: 5, maxRetries: 1}\nevaluation: {build: [go, build], test: [go, test]}');expect(c.evaluation?.maxAttempts).toBe(2);
  expect(()=>parseConfig('target: {language: Go}\nagents: {workers: 5, maxRetries: 1}\nevaluation: {build: [go, build], test: [go, test], maxAttempts: 3}')).toThrow('both');
 });
+test('repository selects source, new or local mode and rejects unsafe publication targets',()=>{
+ expect(parseConfig('target: {language: Go}\nrepository: {mode: source}').repository?.mode).toBe('source');
+ expect(parseConfig('target: {language: Go}\nrepository: {mode: new, url: https://github.com/me/migrated.git, create: true}').repository?.create).toBe(true);
+ for(const r of ['{mode: new}','{mode: source, outputDirectory: .}','{mode: new, url: https://token@github.com/me/app}','{mode: source, migrationBranch: main, baseBranch: main}','{mode: local, url: me/app}','{mode: source, outputDirectory: ../escape}'])expect(()=>parseConfig('target: {language: Go}\nrepository: '+r)).toThrow();
+});

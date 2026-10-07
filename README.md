@@ -2,6 +2,8 @@
 
 Bun/TypeScript orchestration for graph-guided code migration using DeepSeek. It generates one-source-file tasks, runs isolated Git candidates with a bounded worker pool, independently reviews them, and checks the final integration tree.
 
+Project repository: [git-sudo-404/Hensei](https://github.com/git-sudo-404/Hensei).
+
 Install Bun and uv, then run `bun install`. Graphify is the external Python CLI dependency, pinned to `graphifyy==0.9.79`; Hensei's implementation is TypeScript. Graph extraction uses local AST parsing (`extract --code-only --no-cluster --force`), without an LLM or API key.
 
 ## Run
@@ -52,6 +54,43 @@ hensei resume dest/ <run-id>   # recover this run's durable state
 
 Source and destination must be separate directories. Run from the directory containing `.env`, or set the environment variables explicitly. `bun src/cli.ts ...` works without linking. Legacy plans without one-file ownership and `outputPaths` must be regenerated.
 
+## Select the GitHub destination
+
+Add `repository` to `dest/hensei.yaml`. GitHub publishing requires the Git and GitHub CLIs and an authenticated `gh` account with push/merge access. Check with `gh auth status`. The DeepSeek key is used only for model calls; GitHub authentication comes from `gh`.
+
+To create a migration branch in the source repository:
+
+```yaml
+repository:
+  mode: source
+  # url: https://github.com/owner/source-app.git # optional; must match source origin
+  baseBranch: main
+  # migrationBranch: hensei/my-migration # optional; choose a fresh name
+  outputDirectory: migrated # defaults to migration
+```
+
+The source directory must belong to a Git repository with a GitHub `origin`. It may be a subdirectory of that checkout. Hensei clones the remote base into a run-owned publication checkout and creates a new migration branch. Original source files are preserved; translated files live in the dedicated output directory on that branch. The selected output directory must be empty at the base commit. It never pushes generated files directly to the original base branch.
+
+To use a separate destination repository:
+
+```yaml
+repository:
+  mode: new
+  url: https://github.com/owner/translated-app.git
+  create: true # create if missing; omit/false for an existing repository
+  private: true # newly created repositories are private by default
+  baseBranch: main
+  outputDirectory: . # project root; defaults to . in new mode
+```
+
+An empty destination repository receives an empty initial base commit and a separate migration branch. For an existing repository with files, specify a fresh output subdirectory. Repository creation uses the authenticated account's permissions. `mode: new` selects the configured destination URL independently of source origin; `create` controls whether a missing repository may be created. Only GitHub destinations are currently supported.
+
+The default migration branch is `hensei/migration-<run-id>`. Existing migration branches require resuming their owning run; a fresh run refuses to reuse one. Omitting `repository`, or setting `{mode: local}`, keeps output in the run's local integration repository.
+
+For each accepted task, the evaluator first reviews the latest candidate and runs both required checks on its exact integration tree. The publisher then creates a real PR into the migration branch, merges using the [GitHub CLI's expected-head check](https://cli.github.com/manual/gh_pr_merge), and verifies that the merged project tree matches the checked tree. A dependency cycle publishes one atomic PR for the complete group. Remote head names include the run ID, task ID and transaction hash. Local worker branches remain named after task IDs. Branch protection is respected; an unmerged PR is never accepted. A final remote-tree check is also required for completion.
+
+Publishing state and PR receipts are stored in `publication/`. A crash after GitHub merges but before local promotion recovers the checked commit without creating another PR. PRs are opened only after candidate approval and passing checks; rejected candidates remain local revisions until they qualify.
+
 ## What the agents do
 
 1. **Graph harness:** project Graphify symbols onto directed file dependencies. Iterative Kosaraju condenses dependency cycles; batched Kahn traversal computes dependency-ready layers. Missing/external edges are reported.
@@ -63,7 +102,7 @@ Source and destination must be separate directories. Run from the directory cont
 7. **Integration harness:** serially merges a complete SCC bundle into a disposable checkout of the latest integration HEAD. Both configured checks must pass, and the tree/HEAD must remain unchanged. Only that exact tested commit is promoted. Target SHA-256 versions are published after acceptance.
 8. **Completion orchestrator:** compares an independent whole-source inventory with accepted output mappings, verifies current target hashes, then runs complete-project checks. Gaps and failures produce one-file replacement/repair tasks with fresh IDs/worktrees and smaller substeps. An exhausted worker stops receiving work. A one-file task is decomposed into implementation substeps, not fractional file owners.
 
-Graphify includes semantic associations in planning context where available; these do not create ordering edges. Conservative invalidation on any integration change catches possible semantic coupling outside the graph, at the cost of additional retries. LLM review is a judgment, not proof of behavioral equivalence. There is no vector database/RAG service and no GitHub PR creation: submissions are local Git candidates with recorded revisions.
+Graphify includes semantic associations in planning context where available; these do not create ordering edges. Conservative invalidation on any integration change catches possible semantic coupling outside the graph, at the cost of additional retries. LLM review is a judgment, not proof of behavioral equivalence. There is no vector database/RAG service. Submissions are versioned local Git candidates, optionally published as real GitHub PRs after evaluation.
 
 ## Task shape
 
@@ -96,6 +135,7 @@ The run directory is `dest/.hensei/runs/<run-id>/`:
 - `worktrees/<task-id>/`: task branch checkout.
 - `tasks/<task-id>/`: checkout, candidate revisions and evaluation records.
 - `state.sqlite`, `integration-receipts/`: recovery state.
+- `publication/`: GitHub checkout, destination branch, PR transactions and merge proofs when publishing is enabled.
 - `file-versions.json`, `events.jsonl`, `audit-<round>.json`, `report.json`: versions, concurrency, coverage, checks and final result.
 
 `complete` requires unchanged source inventory, 100% coverage of the **included** files through accepted mappings, matching target hashes, and two successful final checks. This measures accounted-for files and configured checks, not semantic equivalence or execution of every possible original test. Dependency caches, VCS metadata and `.env` files are excluded explicitly. Assets with binary/empty contents are copied byte for byte. Unknown text files get one-file follow-up tasks. Symlinks require an explicit exclusion. Failed historical tasks can remain in the report after replacement tasks finish the migration.
@@ -125,7 +165,7 @@ bun run typecheck
 bun scripts/benchmark.ts
 ```
 
-Tests exercise scope and version rejection, partial-cycle prevention, SCCs larger than the worker pool, bounded repair returns, fresh replacements, final-suite repair, coverage gaps/assets, recovery, source drift, budget admission, timeouts, and paged large-file generation. Static ordering also tests a 15,000-file chain.
+Tests exercise scope and version rejection, partial-cycle prevention, SCCs larger than the worker pool, bounded repair returns, fresh replacements, final-suite repair, coverage gaps/assets, recovery, source drift, budget admission, timeouts, and paged large-file generation. Publication tests use real local Git repositories with a scripted GitHub transport to check destination selection, exact merged trees, protection failures and recovery after remote merges. Static ordering also tests a 15,000-file chain.
 
 The benchmark generates 1,000 files / 1,000,000 synthetic code lines and measures source inventory plus file-graph ordering. It makes zero model calls, does not invoke Graphify, and does not measure migration correctness. Results are saved to `artifacts/scalability-report.json`.
 

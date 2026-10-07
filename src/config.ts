@@ -1,15 +1,16 @@
+import {parseRepository,type RepositoryConfig} from './repository';
 import {parseDocument} from 'yaml';
 import {join} from 'node:path';
 import {harnessDefaults,type HarnessConfig} from './harness';
 export interface SandboxConfig {image:string;cpus:number;memory:string;pidsLimit:number}
 export interface EvaluationConfig {build:string[]; test:string[]; timeoutSeconds:number; maxAttempts:number;finalBuild?:string[];finalTest?:string[];sandbox?:SandboxConfig}
-export interface TargetConfig { language:string; framework?:string; version?:string; workers?:number; maxRetries?:number; evaluation?:EvaluationConfig; runtime?:HarnessConfig; orchestration?:{maxRounds:number}; coverage?:{exclude:string[]} }
+export interface TargetConfig { language:string; framework?:string; version?:string; workers?:number; maxRetries?:number; evaluation?:EvaluationConfig; runtime?:HarnessConfig; orchestration?:{maxRounds:number}; coverage?:{exclude:string[]};repository?:RepositoryConfig }
 export function parseConfig(text:string): TargetConfig {
   const document=parseDocument(text,{uniqueKeys:true});
   if (document.errors.length) throw new Error('Invalid hensei.yml YAML');
   const config=document.toJS({maxAliasCount:20});
   if (!config || typeof config !== 'object' || Array.isArray(config) || !config.target || typeof config.target !== 'object' || Array.isArray(config.target)) throw new Error('hensei.yml requires target.language');
-  if (Object.keys(config).some(k=>!['target','agents','evaluation','runtime','orchestration','coverage'].includes(k))) throw new Error('Unknown config field; expected target or agents');
+  if (Object.keys(config).some(k=>!['target','agents','evaluation','runtime','orchestration','coverage','repository'].includes(k))) throw new Error('Unknown config field; expected target or agents');
   const target=config.target;
   if (Object.keys(target).some(k=>!['language','framework','version'].includes(k))) throw new Error('Unknown target field; expected language, framework, version');
   for (const key of ['language','framework','version']) {
@@ -46,7 +47,7 @@ export function parseConfig(text:string): TargetConfig {
   if(config.coverage!==undefined) {
     const c=config.coverage;if(!c||typeof c!=='object'||Object.keys(c).some(k=>k!=='exclude')||!Array.isArray(c.exclude)||c.exclude.some((p:unknown)=>typeof p!=='string'||!p))throw new Error('coverage.exclude must be a glob array');coverage={exclude:c.exclude};
   }
-  return {...(runtime?{runtime}:{}),...(orchestration?{orchestration}:{}),...(coverage?{coverage}:{}),...(evaluation?{evaluation}:{}),...(agents ? {workers:agents.workers,...(agents.maxRetries!==undefined?{maxRetries:agents.maxRetries}:{})} : {}),language:target.language.trim(),...(target.framework ? {framework:target.framework.trim()} : {}),...(target.version ? {version:target.version.trim()} : {})};
+  return {...(config.repository!==undefined?{repository:parseRepository(config.repository)}:{}),...(runtime?{runtime}:{}),...(orchestration?{orchestration}:{}),...(coverage?{coverage}:{}),...(evaluation?{evaluation}:{}),...(agents ? {workers:agents.workers,...(agents.maxRetries!==undefined?{maxRetries:agents.maxRetries}:{})} : {}),language:target.language.trim(),...(target.framework ? {framework:target.framework.trim()} : {}),...(target.version ? {version:target.version.trim()} : {})};
 }
 
 export async function loadConfig(destination:string):Promise<TargetConfig> {

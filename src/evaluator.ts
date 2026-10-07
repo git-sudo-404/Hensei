@@ -1,3 +1,4 @@
+import type {Publisher,Publication} from './publisher';
 import {atomicJson} from './storage';
 import {join} from 'node:path';
 import {mkdir,readdir} from 'node:fs/promises';
@@ -32,7 +33,7 @@ export async function runCheck(command:string[],cwd:string,timeoutSeconds:number
 export class Evaluator {
   private queue:Promise<unknown>=Promise.resolve();
   private versions:Record<string,{version:string;taskId:string;commit:string}>={};
-  constructor(private plan:TaskPlan,private runDir:string,private config:EvaluationConfig,private complete:Complete,private worktrees:WorktreeManager,private journal?:Journal,private harness:HarnessConfig=harnessDefaults){}
+  constructor(private plan:TaskPlan,private runDir:string,private config:EvaluationConfig,private complete:Complete,private worktrees:WorktreeManager,private journal?:Journal,private harness:HarnessConfig=harnessDefaults,private publisher?:Publisher){}
   async evaluate(task:Task,candidate:CandidateRecord,attempt:number):Promise<{approved:boolean;feedback:string;integrationCommit?:string}> {
     return this.evaluateGroup([task],[candidate],attempt);
   }
@@ -41,7 +42,7 @@ export class Evaluator {
   }
   private async evaluateBundle(tasks:Task[],candidates:CandidateRecord[],attempt:number):Promise<{approved:boolean;feedback:string;integrationCommit?:string}> {
     if(tasks.length!==candidates.length||tasks.some(t=>!candidates.some(c=>c.taskId===t.id)))throw new Error('Incomplete coordination bundle');
-    let feedback='',integrationCommit:string|undefined,verdict:Verdict={approved:false,reasons:['Review has not run']};const checks:CheckResult[]=[];
+    let publication:Publication|undefined;let feedback='',integrationCommit:string|undefined,verdict:Verdict={approved:false,reasons:['Review has not run']};const checks:CheckResult[]=[];
     try {
       for(const task of tasks) {
         const candidate=candidates.find(c=>c.taskId===task.id)!;
@@ -72,14 +73,15 @@ export class Evaluator {
         for(const task of tasks)if(task.kind!=='copy')await readVersionedSource(this.plan.sourceRoot,task);
         for(const command of [this.config.build,this.config.test]){const result=await runCheck(command,path,this.config.timeoutSeconds,this.config.sandbox);checks.push(result);if(!result.passed)throw new Error(`Required check failed: ${command.join(' ')}\n${result.output}`);}
         for(const task of tasks)if(task.kind!=='copy')await readVersionedSource(this.plan.sourceRoot,task);
-      },async commit=>{
-        await mkdir(join(this.runDir,'integration-receipts'),{recursive:true});const path=join(this.runDir,'integration-receipts',`${tasks[0].id}.json`);
-        await atomicJson(path,{candidates,commit,verdict,checks});
+      },async (commit,path)=>{
+        await mkdir(join(this.runDir,'integration-receipts'),{recursive:true});const receiptPath=join(this.runDir,'integration-receipts',`${tasks[0].id}.json`);
+        await atomicJson(receiptPath,{candidates,commit,verdict,checks,publicationRequired:!!this.publisher});
+        if(this.publisher){publication=await this.publisher.publish(commit,path,candidates,verdict,checks,this.worktrees.repo);await atomicJson(receiptPath,{candidates,commit,verdict,checks,publicationRequired:true,publication});}
       });
       feedback='Evaluator approved; both required checks passed on the exact merged tree';
     }catch(error){feedback=error instanceof Error?error.message:'Evaluation failed';}
     const approved=!!integrationCommit;
-    for(const task of tasks)await Bun.write(join(this.runDir,'tasks',task.id,`evaluation-${attempt}.json`),JSON.stringify({verdict,checks,approved,integrationCommit,feedback,bundle:tasks.map(t=>t.id)},null,2)+'\n');
+    for(const task of tasks)await Bun.write(join(this.runDir,'tasks',task.id,`evaluation-${attempt}.json`),JSON.stringify({verdict,checks,approved,integrationCommit,feedback,bundle:tasks.map(t=>t.id),publication},null,2)+'\n');
     if(integrationCommit) {
       this.journal?.acceptMany(candidates,integrationCommit);
       for(const candidate of candidates)for(const file of candidate.files)this.versions[file.path]={version:contentVersion(file.encoding==='base64'?Buffer.from(file.content,'base64'):file.content),taskId:candidate.taskId,commit:integrationCommit};
@@ -93,7 +95,15 @@ export class Evaluator {
       const order=new Map((await this.worktrees.commitOrder()).map((commit,index)=>[commit,index]));
       const receipts=await Promise.all((await readdir(directory)).filter(f=>f.endsWith('.json')).map(f=>Bun.file(join(directory,f)).json()));
       receipts.sort((a,b)=>(order.get(a.commit)??Infinity)-(order.get(b.commit)??Infinity));
-      for(const receipt of receipts)if(receipt.verdict?.approved===true&&receipt.checks?.length===2&&receipt.checks.every((c:CheckResult)=>c.passed)&&await this.worktrees.contains(receipt.commit))this.journal?.acceptMany(receipt.candidates??[receipt.candidate],receipt.commit);
+      for(const receipt of receipts) {
+        if(receipt.verdict?.approved!==true||receipt.checks?.length!==2||!receipt.checks.every((c:CheckResult)=>c.passed))continue;
+        if(receipt.publicationRequired){
+          const publication=await this.publisher?.recover(receipt.commit);if(!publication)continue;
+          receipt.publication=publication;
+          if(!await this.worktrees.contains(receipt.commit))await this.worktrees.promoteEvaluated(receipt.commit);
+        }
+        if(await this.worktrees.contains(receipt.commit))this.journal?.acceptMany(receipt.candidates??[receipt.candidate],receipt.commit);
+      }
     }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     for(const row of this.journal?.accepted()??[])for(const file of row.candidate.files)this.versions[file.path]={version:contentVersion(file.encoding==='base64'?Buffer.from(file.content,'base64'):file.content),taskId:row.candidate.taskId,commit:row.commit};
     if(Object.keys(this.versions).length)await atomicJson(join(this.runDir,'file-versions.json'),{schemaVersion:1,files:this.versions});

@@ -98,11 +98,11 @@ export class WorktreeManager {
     const patch=await this.git(this.repo,['diff','--no-ext-diff','--no-textconv','--unified=3',commit,head],true);
     return {head,paths,patch:patch.slice(-24000)};
   }
-  async integrate(candidate:CandidateRecord,check:(path:string)=>Promise<void>,beforePromote?:(commit:string)=>Promise<void>):Promise<string> {
+  async integrate(candidate:CandidateRecord,check:(path:string)=>Promise<void>,beforePromote?:(commit:string,path:string)=>Promise<void>):Promise<string> {
     return this.integrateMany([candidate],check,beforePromote);
   }
   /** A cycle is checked and promoted as a complete bundle; partial cycle merges are forbidden. */
-  async integrateMany(candidates:CandidateRecord[],check:(path:string)=>Promise<void>,beforePromote?:(commit:string)=>Promise<void>):Promise<string> {
+  async integrateMany(candidates:CandidateRecord[],check:(path:string)=>Promise<void>,beforePromote?:(commit:string,path:string)=>Promise<void>):Promise<string> {
     return this.exclusive(async()=>{
       const head=await this.head(),owners=new Set<string>();
       for(const candidate of candidates) {
@@ -124,11 +124,14 @@ export class WorktreeManager {
         if(await this.git(review,['rev-parse','HEAD'])!==evaluated)throw new Error('Checks changed evaluated HEAD; refuse integration');
         if(await this.git(review,['status','--porcelain']))throw new Error('Checks changed the evaluated tree; refuse integration');
         if(await this.head()!==head)throw new Error('Integration HEAD changed during evaluation');
-        await beforePromote?.(evaluated);await this.git(this.repo,['merge','--ff-only',evaluated]);return evaluated;
+        await this.git(this.repo,['update-ref',`refs/hensei/evaluated/${evaluated}`,evaluated]);
+        await beforePromote?.(evaluated,review);await this.git(this.repo,['merge','--ff-only',evaluated]);return evaluated;
       }finally{await this.git(this.repo,['worktree','remove','--force',review]).catch(()=>{});}
     });
   }
 
+  async promoteEvaluated(commit:string):Promise<void>{await this.exclusive(async()=>{if(!/^[a-f0-9]{40}$/.test(commit))throw new Error('Invalid evaluated commit');await this.git(this.repo,['merge','--ff-only',commit]);});}
+  async tree():Promise<string>{return this.git(this.repo,['rev-parse','HEAD^{tree}']);}
   async commitOrder():Promise<string[]>{return (await this.git(this.repo,['rev-list','--first-parent','--reverse','HEAD'])).split('\n');}
   async head():Promise<string>{return this.git(this.repo,['rev-parse','HEAD']);}
   async contains(commit:string):Promise<boolean>{try{await this.git(this.repo,['merge-base','--is-ancestor',commit,'HEAD']);return true;}catch{return false;}}
