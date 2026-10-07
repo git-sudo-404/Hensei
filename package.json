@@ -1,6 +1,6 @@
 {
   "name": "hensei",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
     "plan": "bun src/cli.ts plan",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "benchmark": "bun scripts/benchmark.ts",
     "start": "bun src/cli.ts",
     "run": "bun src/cli.ts run"
   },

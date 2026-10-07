@@ -39,3 +39,9 @@ test('invalid limits, dependencies and overlapping ownership reject before invoc
   await expect(dispatch(plan([task('task_a'),task('task_a')]),2,worker)).rejects.toThrow();
   expect(calls).toBe(0);
 });
+test('large dependency chains and resumed successes schedule without repeated graph scans',async()=>{
+  const tasks=Array.from({length:2000},(_,i)=>task(`task_${i}`,i?[`task_${i-1}`]:[]));let processed=0;
+  const initial=Object.fromEntries(tasks.slice(0,1000).map(t=>[t.id,'SUCCEEDED' as const]));
+  const report=await dispatch(plan(tasks),5,async()=>{processed++;},undefined,initial);
+  expect(processed).toBe(1000);expect(report.peakActiveWorkers).toBe(1);expect(report.statuses.task_1999).toBe('SUCCEEDED');
+});

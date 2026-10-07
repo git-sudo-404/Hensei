@@ -7,12 +7,12 @@ import {executeTasks} from '../src/execution';
 import {validateVerdict,runCheck} from '../src/evaluator';
 import type {Complete,TaskPlan} from '../src/planner';
 async function fixture(action:(dest:string)=>Promise<void>) {
-  const root=await mkdtemp(join(tmpdir(),'hensei-eval-')),dest=join(root,'dest');
+  const root=await mkdtemp(join(tmpdir(),'hensei-eval-')),dest=join(root,'dest'),source=join(root,'src');
   try {
-    await mkdir(dest);const content='export function value(){return 7;}';await Bun.write(join(root,'value.ts'),content);
-    const plan:TaskPlan={schemaVersion:1,sourceRoot:root,targetLanguage:'TypeScript',model:'test',createdAt:'test',graphVersion:'test',warnings:[],tasks:[{id:'task_0001',groupId:'g',layer:0,goal:'Preserve value()',prompt:'Translate value()',dependsOn:[],files:[{path:'value.ts',version:`sha256:${createHash('sha256').update(content).digest('hex')}`}]}]};
+    await mkdir(dest);await mkdir(source);const content='export function value(){return 7;}';await Bun.write(join(source,'value.ts'),content);
+    const plan:TaskPlan={schemaVersion:1,sourceRoot:source,targetLanguage:'TypeScript',model:'test',createdAt:'test',graphVersion:'test',warnings:[],tasks:[{id:'task_0001',groupId:'g',layer:0,goal:'Preserve value()',prompt:'Translate value()',dependsOn:[],outputPaths:['value.ts'],steps:['Translate behavior'],files:[{path:'value.ts',version:`sha256:${createHash('sha256').update(content).digest('hex')}`}]}]};
     await Bun.write(join(dest,'tasks.json'),JSON.stringify(plan));
-    await Bun.write(join(dest,'hensei.yaml'),JSON.stringify({target:{language:'TypeScript'},agents:{workers:2},evaluation:{build:[process.execPath,'-e','await import("./value.ts")'],test:[process.execPath,'-e','const {value}=await import("./value.ts");if(value()!==7)process.exit(1)'],maxAttempts:2}}));
+    await Bun.write(join(dest,'hensei.yaml'),JSON.stringify({orchestration:{maxRounds:0},target:{language:'TypeScript'},agents:{workers:2},evaluation:{build:[process.execPath,'-e','await import("./value.ts")'],test:[process.execPath,'-e','const {value}=await import("./value.ts");if(value()!==7)process.exit(1)'],maxAttempts:2}}));
     await action(dest);
   }finally{await rm(root,{recursive:true,force:true});}
 }

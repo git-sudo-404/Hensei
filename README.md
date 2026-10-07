@@ -1,201 +1,132 @@
-# Hensei — Bun / TypeScript
+# Hensei
 
-This branch implements repository graph extraction and migration ordering. A DeepSeek planning agent generates versioned tasks. Parallel workers produce candidates; an evaluator reviews them, runs required checks, and merges passing changes.
+Bun/TypeScript orchestration for graph-guided code migration using DeepSeek. It generates one-source-file tasks, runs isolated Git candidates with a bounded worker pool, independently reviews them, and checks the final integration tree.
 
-## Setup
+Install Bun and uv, then run `bun install`. Graphify is the external Python CLI dependency, pinned to `graphifyy==0.9.79`; Hensei's implementation is TypeScript. Graph extraction uses local AST parsing (`extract --code-only --no-cluster --force`), without an LLM or API key.
 
-Install [Bun](https://bun.sh) and [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
+## Run
 
-```sh
-bun install
-bun run graph ./examples/cyclic --out ./artifacts/cyclic
-bun run graph /absolute/path/to/repository --out ./artifacts/repository
-```
-
-Hensei is TypeScript running on Bun. [Graphify](https://github.com/Graphify-Labs/graphify) is an external Python CLI dependency, pinned to `graphifyy==0.9.79`, invoked through uvx. The first extraction downloads its package dependencies. It runs `extract --code-only --no-cluster --force`, uses local AST extraction, and requires no model API key. Auto-refresh of installed assistant skills is disabled by Hensei.
-
-To process an existing raw, directed Graphify extraction:
-
-```sh
-bun run order /path/to/graph.json --root /path/to/scanned/repository --out ./artifacts/order
-```
-
-`--root` must match the source repository used by extraction, particularly when Graphify emits absolute paths. Undirected exports are rejected because they lose dependency direction.
-
-## Pipeline
-
-1. Graphify emits symbol/file nodes and relationship edges.
-2. Hensei maps symbols to `source_file` and projects `imports`, `imports_from`, `calls`, `inherits`, and `implements` onto file dependencies. Source is consumer; target is prerequisite. `contains` and semantic associations do not impose ordering. Same-file edges are ignored, duplicates removed, and unresolved/external targets reported.
-3. Iterative Kosaraju groups strongly connected components: mutually dependent files become one atomic group, without recursion limits.
-4. Batched Kahn traversal of the condensed DAG emits all dependency-ready groups as a layer, then unlocks the next layer. Every prerequisite is in an earlier layer. Traversal is O(V+E), excluding deterministic sorting.
-
-```text
-Layer 0: [base.ts] | [independent.ts]
-Layer 1: [a.ts, b.ts] (cycle)
-Layer 2: [app.ts]
-```
-
-Separate groups in a layer can be scheduled in parallel with respect to the extracted graph. Files inside a cyclic group must be planned together. A future scheduler could unlock individual groups when their own prerequisites finish instead of waiting at layer barriers.
-
-## Outputs
-
-- `graphify-out/graph.json`: untouched upstream extraction.
-- `file-graph.json`: normalized files, dependencies, and warnings.
-- `migration-order.json`: group IDs, files, `cyclic`, `dependsOn`, and ordered layers. This is the deterministic group order; the separate planner command generates `tasks.json`.
-
-## Limits
-
-Language coverage follows Graphify's extractors. Dynamic imports, reflection, generated code, and unresolved references can leave dependencies missing. Files absent from Graphify's nodes are not scheduled. This is a rough static plan, not a correctness guarantee or execution engine. Review unresolved-edge warnings before migration. Graph extraction uses no RAG or LLM calls; the separate planner uses DeepSeek.
-
-The previous Python implementation is preserved in Git history at commit `be9c710`; `main` now contains the Bun/TypeScript implementation. Historical research and ignored run artifacts remain on disk. `.env` stays local and ignored; the graph pipeline needs no DeepSeek key.
-
-## Verification
-
-```sh
-bun test
-bun run typecheck
-```
-
-Tests cover fan-in, cycles, disconnected components, self-loops, duplicate edges, deterministic output, malformed/undirected graphs, a 15,000-file chain, and recorded real Graphify extraction of the cycle example.
-
-## DeepSeek task planner
-
-Put your key in the workspace `.env` (Bun loads it automatically):
+Put the key in this checkout's ignored `.env`. Bun loads it when commands run from this directory:
 
 ```dotenv
 DEEPSEEK_API_KEY=your_key_here
-# Optional; CLI --model takes precedence
 DEEPSEEK_MODEL=deepseek-flash
 ```
 
-Generate tasks from the raw Graphify graph:
+Create `dest/hensei.yaml` (or `.yml`, exactly one):
 
-```sh
-bun run plan artifacts/cyclic/graphify-out/graph.json \
-  --root examples/cyclic --target Go --out artifacts/cyclic/tasks.json
+```yaml
+target:
+  language: TypeScript
+  # framework: Next.js
+  # version: '5.9'
+agents:
+  workers: 5
+  maxRetries: 3 # repair RETURNS; initial submission + 3 returns = 4 attempts
+evaluation:
+  build: [bun, run, build]
+  test: [bun, test]
+  timeoutSeconds: 60
+  # finalBuild / finalTest optionally run a different complete-project suite
+orchestration:
+  maxRounds: 2 # bounded replacement/coverage/final-repair rounds
+runtime:
+  maxCalls: 200
+  maxInputBytes: 180000
+  maxOutputTokens: 8192
+  maxTotalTokens: 500000
+  maxRetries: 2 # transient HTTP retries, distinct from worker repair returns
+  maxTurns: 32 # context reads/chunk writes/final answer per agent invocation
+coverage:
+  exclude: [] # intentional exclusions appear in the final report
 ```
 
-Use the repository's actual path and your desired target language for other runs. Extraction and planning are separate steps; rerun graph extraction after changing source files.
+Commands must match the generated project's build system and tests. The run repository starts empty; existing destination scaffolding is not imported. Setup files must be explicitly owned by a planned task. Tests that only become runnable after complete migration belong in `finalTest`; incremental checks must be suitable for dependency-ready partial trees. Hensei cannot manufacture a universal equivalence test suite from command names.
 
-One planning agent uses a separate DeepSeek JSON-mode call for each SCC group in layer order. It receives that group's graph neighborhood, file names, SHA-256 versions, dependency edges, and accepted prerequisite task summaries. File contents are read locally to hash and detect changes, but are not included in the API payload. The supplied Graphify metadata is sent to DeepSeek. This graph-only planner cannot infer implementation behavior that the graph does not represent.
+```sh
+bun link
+hensei src/ dest/              # extract graph and publish the plan
+hensei run dest/               # execute, evaluate, merge and audit
+hensei resume dest/ <run-id>   # recover this run's durable state
+```
 
-The model writes `goal` and `prompt`; Hensei validates the echoed assigned ID and files, then attaches authoritative dependencies and layer information. Cycle groups remain indivisible. Invalid JSON/IDs/paths/hashes allow one correction attempt. API failures stop immediately without automatic request retries; each request has a 120-second deadline. Inputs over 180 KB per group fail before any request, rather than silently truncating context. Existing output is replaced atomically only after every task validates and all source versions are unchanged.
+Source and destination must be separate directories. Run from the directory containing `.env`, or set the environment variables explicitly. `bun src/cli.ts ...` works without linking. Legacy plans without one-file ownership and `outputPaths` must be regenerated.
 
-Each task contains:
+## What the agents do
+
+1. **Graph harness:** project Graphify symbols onto directed file dependencies. Iterative Kosaraju condenses dependency cycles; batched Kahn traversal computes dependency-ready layers. Missing/external edges are reported.
+2. **Global planner:** receives the complete graph when it fits, otherwise a reference with bounded graph-page reads. Produces a superficial architecture/contract/validation strategy.
+3. **Task breakdown agent:** recursively partitions SCC tasks until every leaf owns exactly one versioned source file. Host validation rejects invented files/hashes, omissions, duplicate ownership and non-progressing splits. Every leaf declares its exact allowed target paths and implementation substeps.
+4. **Deterministic dispatcher:** owns dependency admission and a fixed pool of `agents.workers` worker actors. A submitted candidate releases its actor. This allows a cycle larger than the worker pool to finish generating without deadlock. Dependencies unlock only after approval and integration.
+5. **Migration workers:** read assigned source and related context, generate scoped code, and commit in real worktrees on branches named after task IDs. Workers can read pages and append target-code chunks, but cannot execute shell commands. All assigned source pages must be supplied before a final answer is accepted.
+6. **Evaluator:** checks scope, source versions, target preimages, exact candidate commits and logical/semantic contracts. Any integration change since a candidate's context snapshot invalidates it, even without an import relation. Feedback contains changed paths, a bounded actual diff, and accepted change summaries. Workers refresh from integration and submit a new revision.
+7. **Integration harness:** serially merges a complete SCC bundle into a disposable checkout of the latest integration HEAD. Both configured checks must pass, and the tree/HEAD must remain unchanged. Only that exact tested commit is promoted. Target SHA-256 versions are published after acceptance.
+8. **Completion orchestrator:** compares an independent whole-source inventory with accepted output mappings, verifies current target hashes, then runs complete-project checks. Gaps and failures produce one-file replacement/repair tasks with fresh IDs/worktrees and smaller substeps. An exhausted worker stops receiving work. A one-file task is decomposed into implementation substeps, not fractional file owners.
+
+Graphify includes semantic associations in planning context where available; these do not create ordering edges. Conservative invalidation on any integration change catches possible semantic coupling outside the graph, at the cost of additional retries. LLM review is a judgment, not proof of behavioral equivalence. There is no vector database/RAG service and no GitHub PR creation: submissions are local Git candidates with recorded revisions.
+
+## Task shape
 
 ```json
 {
   "id": "task_0001",
   "groupId": "group_0003",
   "layer": 0,
-  "goal": "Migrate the base module to Go while preserving its public interface",
-  "prompt": "Translate the assigned module to Go; preserve exported names and behavior, and validate the resulting implementation.",
-  "files": [{"path": "base.ts", "version": "sha256:<64 hexadecimal characters>"}],
+  "goal": "Preserve the base module API",
+  "prompt": "Translate this module while preserving its contract.",
+  "files": [{"path": "base.ts", "version": "sha256:<64 hex characters>"}],
+  "outputPaths": ["base.ts"],
+  "steps": ["Preserve exported interfaces", "Implement behavior", "Validate edge cases"],
+  "semanticPeers": ["a.ts"],
   "dependsOn": []
 }
 ```
 
-This illustrative task is not a recorded model response. The plan also records target language, source root, model, graph hash, generation timestamp, and unresolved graph warnings. File versions identify the exact input contents rather than a Git branch or modification time. Generated goals/prompts require review before execution; schema validation does not establish migration correctness. Parallel workers are available through the run command below; evaluation and integration are part of the run command.
+Illustrative, not a provider response. `files` always contains one source file; several files may share a cycle `groupId` and be merged together. Target setup/test files can be included in an owner's explicit write set. Source hashes remain the original input versions; `file-versions.json` records accepted target versions. Schema version 2 also records the graph hash, target, model, timestamp and global strategy.
 
-The adapter uses DeepSeek's [JSON output mode](https://api-docs.deepseek.com/guides/json_mode/) and validates the response locally.
+## Resilience and evidence
 
-## Source / destination command
+SQLite WAL records tasks, statuses, accepted integrations, inventory, config, rounds, retry attempts and usage. Critical JSON checkpoints and receipts use atomic replacement and disk sync. A destination lock prevents concurrent controllers. Receipts written before Git promotion recover a merge after a crash; multi-file cycle acceptance is one database transaction. Resume recovers orphan worktrees and missing task checkpoints, regenerates interrupted candidates within their remaining attempt budget, and skips accepted tasks. Source/config drift stops recovery. A crash during the tiny lock-claim operation leaves a fail-closed recovery marker.
 
-Register the local command once from this checkout:
+HTTP 429/5xx and connection failures have bounded exponential retries; permanent provider failures stop. Calls share admission and token reservations across all roles. Failed/uncertain calls charge a conservative estimate. `maxCalls` counts harness calls; each can have at most `runtime.maxRetries + 1` transport attempts. Budgets, rounds and no-progress guards bound autonomous work. Raise call/token budgets deliberately for large repositories; the example limits are for small experiments. Stop conditions produce an incomplete report and nonzero CLI exit, never an unsupported success claim.
 
-```sh
-bun install
-bun link
-```
+The run directory is `dest/.hensei/runs/<run-id>/`:
 
-Create a destination directory with `hensei.yml`:
+- `repo/`: accepted target integration tree; generated files are not exported into the destination root.
+- `worktrees/<task-id>/`: task branch checkout.
+- `tasks/<task-id>/`: checkout, candidate revisions and evaluation records.
+- `state.sqlite`, `integration-receipts/`: recovery state.
+- `file-versions.json`, `events.jsonl`, `audit-<round>.json`, `report.json`: versions, concurrency, coverage, checks and final result.
 
-```yaml
-# dest/hensei.yml
-# Language is required; framework and language version are optional.
-target:
-  language: TypeScript
-  framework: Next.js
-  version: '5.9'
-```
+`complete` requires unchanged source inventory, 100% coverage of the **included** files through accepted mappings, matching target hashes, and two successful final checks. This measures accounted-for files and configured checks, not semantic equivalence or execution of every possible original test. Dependency caches, VCS metadata and `.env` files are excluded explicitly. Assets with binary/empty contents are copied byte for byte. Unknown text files get one-file follow-up tasks. Symlinks require an explicit exclusion. Failed historical tasks can remain in the report after replacement tasks finish the migration.
 
-Quote version numbers. `version` refers to the target language version. Any language/framework name may be specified; support is a planning instruction, not a guarantee that a future migration worker supports it.
+## Check isolation
 
-Then run, from a directory containing your `.env`:
-
-```sh
-hensei src/ dest/
-# Without linking:
-bun run start src/ dest/
-```
-
-The destination must already exist, contain `hensei.yml`, and be outside the source directory. Hensei reads the config, extracts the source graph with Graphify, groups cycles, computes dependency layers, and asks DeepSeek to produce versioned tasks for the configured target. It writes graph/order artifacts under `dest/.hensei/` and publishes `dest/tasks.json` only after validation. It produces the task plan; use the separate run command below to generate migration candidates. The standalone `graph`, `order`, and `plan` commands remain available.
-
-## Parallel migration workers
-
-Set the maximum number of concurrent worker agents in the destination config. Both `hensei.yaml` and `hensei.yml` are supported; having both is an error.
+Worktrees isolate checkouts; local commands still execute on the host. For autonomous checks, configure a prebuilt local Docker image:
 
 ```yaml
-target:
-  language: Go
-agents:
-  workers: 5
-```
-
-After generating `dest/tasks.json`, run:
-
-```sh
-hensei run dest/
-# Or: bun run run dest/
-```
-
-The dispatcher is a deterministic controller, not an extra LLM call. It validates task IDs, dependency cycles and exclusive source ownership, checks every source hash, then maintains a fixed pool of worker slots. Independent ready tasks start together up to `agents.workers` (integer 1–64). Dependents unlock as soon as their own prerequisites are evaluator-approved and integrated, rather than waiting for an entire layer. Failures block descendants; unrelated tasks continue. The limit applies to active task workers, including their model calls and one optional JSON correction attempt.
-
-Each worker has a separate model conversation and a real Git worktree on a branch named exactly after its task ID. Unlike the graph-only planner, **migration workers send assigned source contents and prerequisite candidate code to DeepSeek**. They produce JSON containing target file paths/content and source ownership. The harness checks safe paths, coverage and current source hashes, then commits candidate code in that task’s worktree. Workers have no shell tools. The evaluator runs the user-configured build/test commands; model approval alone never permits integration. File-path validation is not a security sandbox for executing generated code.
-
-Outputs under `dest/.hensei/runs/<run-id>/`:
-
-- `tasks/<task-id>/candidate.json`: candidate manifest.
-- `worktrees/<task-id>/`: real Git checkout containing candidate files.
-- `events.jsonl`: timestamped starts/completions/failures and active-worker counts.
-- `report.json`: statuses, configured limit, peak active workers, total duration and `parallelObserved`.
-
-`parallelObserved` means overlapping worker lifetimes were measured, not that DeepSeek's internal GPU computation was observed. A narrow dependency graph may expose fewer ready tasks than the configured capacity. `SUCCEEDED` now means evaluator approval, passing required checks on the latest integration tree, and a completed merge. Crash recovery and token budgets remain future work. Candidate files are not installed into the destination application, and source files remain untouched.
-
-Every invocation starts a new run rather than resuming an interrupted run. The terminal command exits nonzero if any task failed or was blocked. Planning remains a separate command; `hensei src/ dest/` does not automatically execute workers.
-
-
-## Git worktree isolation
-
-Each run initializes its own Git repository at `.hensei/runs/<run-id>/repo/`, with an empty `integration` baseline. It creates worktrees at `worktrees/<task-id>/` and branches named exactly `task_0001`, etc. Because each run has a separate repository, repeated task IDs in later runs do not collide. This repository is separate from the Hensei checkout and any source/destination repository; existing destination scaffolding is not copied into the baseline yet.
-
-A task worktree starts from the current integration branch. Its dependencies must already be evaluator-approved and merged; prerequisite snapshots are checked against the integrated contents. Conflicting prerequisite files or outputs that overwrite prerequisites fail the task. The worker writes its own generated target files into the worktree root and creates a candidate commit. `tasks/<task-id>/candidate.json` records `branch`, `worktree`, `baseCommit`, and `commit`, allowing a future evaluator to inspect the exact candidate diff. `worktree.json` is written before the model call, so failed task checkouts remain inspectable too.
-
-Shared Git mutations are serialized to avoid lock races; model calls remain concurrent under the configured worker limit. Worktrees and branches are retained for inspection. Git commits prove isolation and record changes; they do not prove code correctness. Worktrees provide checkout isolation, not a sandbox for executing arbitrary code. Only user-configured check commands run. Passing candidates merge automatically into the run’s integration branch.
-
-
-## Evaluator, repair and integration
-
-Execution requires both build and test commands in destination `hensei.yaml`/`hensei.yml`. Commands are argument arrays, not model-generated shell strings:
-
-```yaml
-target:
-  language: Go
-agents:
-  workers: 5
 evaluation:
-  build: [go, build, ./...]
-  test: [go, test, ./...]
-  timeoutSeconds: 60
-  maxAttempts: 2
+  build: [bun, run, build]
+  test: [bun, test]
+  sandbox:
+    image: your-prebuilt-migration-image:tag
+    cpus: 2
+    memory: 2g
+    pidsLimit: 128
 ```
 
-Configure commands for the actual target project, including its module/package setup. Hensei does not auto-generate a universal test suite. An example JavaScript-to-TypeScript evaluator configuration with compilation and arithmetic behavior checks is provided at `examples/evaluation/hensei.yaml`. These checks execute locally, outside a container; worktrees are checkout isolation, not execution sandboxes. The harness omits credential-like environment variables from check processes and bounds their captured output.
+The Docker harness uses no network, no forwarded host credentials, dropped capabilities, a read-only root, CPU/memory/process limits and a bounded temporary filesystem. It mounts only the candidate checkout. It never pulls an image automatically; provision the image and dependencies beforehand. Missing Docker/image/check failures stop approval. Tests must use in-container executable paths. Container argument generation is tested; a Docker daemon integration test has not been run in this environment. These controls follow the [Docker run reference](https://docs.docker.com/reference/cli/docker/container/run/).
 
-A dedicated, serial evaluator conversation compares original source, target code, task requirements and dependency candidates for logical errors. It emits an explicit JSON approval/rejection with reasons. This is a model judgment, not a proof of equivalence. Approval is followed by a real Git merge into a temporary worktree based on the **latest** integration HEAD; both configured checks run on that combined tree. Dirty checkouts, changed source versions, unexpected candidate diffs, merge conflicts, failed commands and timeouts prevent promotion. Only the exact clean tested merge commit is fast-forwarded into the run’s integration branch. Failed evaluation checkouts remain for inspection.
+## Verification and scale
 
-Rejected candidates return feedback to their original worker, which retries up to `maxAttempts` (1–5, default 2). Repair resets only that task branch to its recorded base and replaces the task's output; unrelated accepted changes are untouched. After the limit, the task fails and its dependents block. Merge operations and evaluator reviews are serialized, while other migration workers remain parallel.
+```sh
+bun test
+bun run typecheck
+bun scripts/benchmark.ts
+```
 
-After each successful merge, `file-versions.json` in the run directory atomically records accepted target-file SHA-256 hashes, originating task IDs and integration commits. Original source-file hashes in `tasks.json` are unchanged: they continue to identify the migration input. Per-task `evaluation-<attempt>.json` records the model verdict, build/test output, final approval and merge commit.
+Tests exercise scope and version rejection, partial-cycle prevention, SCCs larger than the worker pool, bounded repair returns, fresh replacements, final-suite repair, coverage gaps/assets, recovery, source drift, budget admission, timeouts, and paged large-file generation. Static ordering also tests a 15,000-file chain.
 
-Merges occur inside the isolated run repository at `.hensei/runs/<run-id>/repo/`, not in the Hensei application's main branch or the user's existing destination repository. The integrated target tree is available there; deployment into the destination root remains separate. Version metadata and Git history are retained for inspection. Interrupted-run recovery and transactional recovery from filesystem failures after a merge are not implemented yet.
+The benchmark generates 1,000 files / 1,000,000 synthetic code lines and measures source inventory plus file-graph ordering. It makes zero model calls, does not invoke Graphify, and does not measure migration correctness. Results are saved to `artifacts/scalability-report.json`.
+
+This is a stricter experimental harness, not certification that any production app can be migrated correctly without human review. Dynamic dependencies, provider context/output limits, broad cycles, target setup, external services, inadequate tests and conservative stale-context retries can prevent completion. Million-line **end-to-end** migration needs representative application benchmarks, trusted behavioral/differential tests and measured costs before that claim is justified. See [architecture and research notes](docs/architecture.md).

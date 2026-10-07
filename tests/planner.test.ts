@@ -15,8 +15,9 @@ async function fixture(run:(root:string,graphPath:string,output:string)=>Promise
 }
 const reply: Complete=async (_system,user)=> {
   const context=JSON.parse(user.split('\n')[0]);
-  expect(context.sources).toBeUndefined();
-  return {content:JSON.stringify({id:context.id,goal:'Migrate to Go preserving behavior',prompt:`Translate ${context.files.map((f:{path:string})=>f.path).join(', ')} into Go and validate public behavior.`,files:context.files})};
+  expect(context.sources??[]).toEqual([]);
+  if(context.stage==='outline')return {content:JSON.stringify({goal:'Migrate application',prompt:'Preserve APIs and validate in dependency order'})};
+  return {content:JSON.stringify({id:context.id,goal:'Migrate to Go preserving behavior',prompt:`Translate ${context.files.map((f:{path:string})=>f.path).join(', ')} into Go and validate public behavior.`,files:context.files,outputPaths:context.files.map((f:{path:string})=>f.path.replace(/\.ts$/,'.go')),steps:['Translate public APIs','Validate behavior']})};
 };
 test('planner publishes versioned tasks in prerequisite-first order',async()=>fixture(async(root,graphPath,output)=> {
   const plan=await planTasks({root,graphPath,output,target:'Go',framework:'Gin',version:'1.24',model:'test',complete:async(s,u)=>{const context=JSON.parse(u.split('\n')[0]); expect(context.targetFramework).toBe('Gin'); expect(context.targetVersion).toBe('1.24');return reply(s,u);}});
@@ -30,7 +31,7 @@ test('invalid JSON gets one correction; fabricated files fail without replacing 
   let calls=0;
   const retry:Complete=async(s,u)=> ++calls===1 ? {content:'invalid'} : reply(s,u);
   await planTasks({root,graphPath,output,target:'Go',model:'test',complete:retry});
-  expect(calls).toBe(3);
+  expect(calls).toBe(4);
   const original=await Bun.file(output).text();
   await expect(planTasks({root,graphPath,output,target:'Go',model:'test',complete:async()=>({content:'{"id":"wrong","goal":"x","prompt":"x","files":[]}'})})).rejects.toThrow('validation');
   expect(await Bun.file(output).text()).toBe(original);
@@ -40,11 +41,10 @@ test('source changes prevent publication',async()=>fixture(async(root,graphPath,
   await expect(planTasks({root,graphPath,output,target:'Go',model:'test',complete:changing})).rejects.toThrow('Source changed');
   expect(await Bun.file(output).exists()).toBe(false);
 }));
-test('oversized context fails before model calls',async()=>fixture(async(root,graphPath,output)=> {
-  const data=await Bun.file(graphPath).json(); data.nodes[0].label='a'.repeat(180001); await Bun.write(graphPath,JSON.stringify(data));
-  let calls=0;
-  await expect(planTasks({root,graphPath,output,target:'Go',model:'test',complete:async(s,u)=>{calls++;return reply(s,u);}})).rejects.toThrow('Context too large');
-  expect(calls).toBe(0);
+test('large global graph remains available through bounded pages',async()=>fixture(async(root,graphPath,output)=> {
+  const data=await Bun.file(graphPath).json();data.nodes[0].label='a'.repeat(180001);await Bun.write(graphPath,JSON.stringify(data));let calls=0;
+  const plan=await planTasks({root,graphPath,output,target:'Go',model:'test',complete:async(s,u)=>{calls++;const c=JSON.parse(u.split('\n')[0]);if(calls===1){expect(c.graph).toBeUndefined();expect(c.graphCharacters).toBeGreaterThan(180000);return {content:'{"action":"read_graph","offset":0,"length":500}'};}if(calls===2)expect(u).toContain('Graph page');return reply(s,u);}});
+  expect(plan.tasks.length).toBe(2);expect(calls).toBe(4);
 }));
 test('version mismatches, duplicate paths and missing credentials are rejected',()=> {
   const files=[{path:'a.ts',version:'sha256:abc'},{path:'b.ts',version:'sha256:def'}];
@@ -62,12 +62,12 @@ test('DeepSeek adapter uses JSON mode and rejects truncated responses and HTTP f
       expect(body.messages[0].role).toBe('system');
       return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:'{"goal":"test"}'}}]}));
     }) as unknown as typeof fetch;
-    expect((await deepseekComplete('test-key','test-model')('system','context')).content).toBe('{"goal":"test"}');
+    expect((await deepseekComplete('test-key','test-model',{maxRetries:0})('system','context')).content).toBe('{"goal":"test"}');
     globalThis.fetch=(async()=>new Response(JSON.stringify({choices:[{finish_reason:'length',message:{content:'{}'}}]}))) as unknown as typeof fetch;
-    await expect(deepseekComplete('test-key','test-model')('s','u')).rejects.toThrow('incomplete');
+    await expect(deepseekComplete('test-key','test-model',{maxRetries:0})('s','u')).rejects.toThrow('incomplete');
     globalThis.fetch=(async()=>new Response('sensitive provider body',{status:401})) as unknown as typeof fetch;
-    await expect(deepseekComplete('test-key','test-model')('s','u')).rejects.toThrow('HTTP 401');
+    await expect(deepseekComplete('test-key','test-model',{maxRetries:0})('s','u')).rejects.toThrow('HTTP 401');
     globalThis.fetch=(async()=>{throw new Error('network details');}) as unknown as typeof fetch;
-    await expect(deepseekComplete('test-key','test-model')('s','u')).rejects.toThrow('connection failed');
+    await expect(deepseekComplete('test-key','test-model',{maxRetries:0})('s','u')).rejects.toThrow('connection failed');
   } finally {globalThis.fetch=original;}
 });

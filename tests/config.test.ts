@@ -12,6 +12,11 @@ test('config accepts bounded worker limit and rejects invalid limits',()=> {
   for (const value of ['0','-1','1.5','65','"5"'])expect(()=>parseConfig(`target:\n  language: Go\nagents:\n  workers: ${value}`)).toThrow();
 });
 test('evaluation requires separate build/test argv and bounded attempts',()=> {
-  expect(parseConfig('target:\n  language: Go\nevaluation:\n  build: [go, build, ./...]\n  test: [go, test, ./...]').evaluation?.maxAttempts).toBe(2);
+  expect(parseConfig('target:\n  language: Go\nevaluation:\n  build: [go, build, ./...]\n  test: [go, test, ./...]').evaluation?.maxAttempts).toBe(4);
   for(const extra of ['build: "go build"\n  test: [go, test]','build: [go, build]','build: [go, build]\n  test: [go, test]\n  maxAttempts: 0'])expect(()=>parseConfig(`target:\n  language: Go\nevaluation:\n  ${extra}`)).toThrow();
+});
+
+test('worker repair returns default to three and configured maxRetries is distinct from transport retries',()=>{
+ const c=parseConfig('target: {language: Go}\nagents: {workers: 5, maxRetries: 1}\nevaluation: {build: [go, build], test: [go, test]}');expect(c.evaluation?.maxAttempts).toBe(2);
+ expect(()=>parseConfig('target: {language: Go}\nagents: {workers: 5, maxRetries: 1}\nevaluation: {build: [go, build], test: [go, test], maxAttempts: 3}')).toThrow('both');
 });
