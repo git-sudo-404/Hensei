@@ -151,15 +151,24 @@ hensei run dest/
 
 The dispatcher is a deterministic controller, not an extra LLM call. It validates task IDs, dependency cycles and exclusive source ownership, checks every source hash, then maintains a fixed pool of worker slots. Independent ready tasks start together up to `agents.workers` (integer 1–64). Dependents unlock as soon as their own prerequisites succeed, rather than waiting for an entire layer. Failures block descendants; unrelated tasks continue. The limit applies to active task workers, including their model calls and one optional JSON correction attempt.
 
-Each worker has a separate model conversation. Unlike the graph-only planner, **migration workers send assigned source contents and prerequisite candidate code to DeepSeek**. They produce JSON containing target file paths/content and source ownership. The harness checks safe paths, coverage and current source hashes, then saves candidate code in a unique task directory. There are no shell tools, compiler checks or automated correctness claims in this worker yet. File-path validation is not a security sandbox for executing generated code.
+Each worker has a separate model conversation and a real Git worktree on a branch named exactly after its task ID. Unlike the graph-only planner, **migration workers send assigned source contents and prerequisite candidate code to DeepSeek**. They produce JSON containing target file paths/content and source ownership. The harness checks safe paths, coverage and current source hashes, then commits candidate code in that task’s worktree. There are no shell tools, compiler checks or automated correctness claims in this worker yet. File-path validation is not a security sandbox for executing generated code.
 
 Outputs under `dest/.hensei/runs/<run-id>/`:
 
 - `tasks/<task-id>/candidate.json`: candidate manifest.
-- `tasks/<task-id>/files/`: isolated candidate files.
+- `worktrees/<task-id>/`: real Git checkout containing candidate files.
 - `events.jsonl`: timestamped starts/completions/failures and active-worker counts.
 - `report.json`: statuses, configured limit, peak active workers, total duration and `parallelObserved`.
 
-`parallelObserved` means overlapping worker lifetimes were measured, not that DeepSeek's internal GPU computation was observed. A narrow dependency graph may expose fewer ready tasks than the configured capacity. `SUCCEEDED` means a structurally validated candidate was written; it does not mean compilation/tests passed or evaluator approval occurred. Prerequisite candidates remain provisional. Git worktrees, evaluator-driven repair, integration/merging, crash recovery and token budgets are future work. Candidate files are not installed into the destination application, and source files remain untouched.
+`parallelObserved` means overlapping worker lifetimes were measured, not that DeepSeek's internal GPU computation was observed. A narrow dependency graph may expose fewer ready tasks than the configured capacity. `SUCCEEDED` means a structurally validated candidate was written; it does not mean compilation/tests passed or evaluator approval occurred. Prerequisite candidates remain provisional. Evaluator-driven repair, integration/merging, crash recovery and token budgets are future work. Candidate files are not installed into the destination application, and source files remain untouched.
 
 Every invocation starts a new run rather than resuming an interrupted run. The terminal command exits nonzero if any task failed or was blocked. Planning remains a separate command; `hensei src/ dest/` does not automatically execute workers.
+
+
+## Git worktree isolation
+
+Each run initializes its own Git repository at `.hensei/runs/<run-id>/repo/`, with an empty `integration` baseline. It creates worktrees at `worktrees/<task-id>/` and branches named exactly `task_0001`, etc. Because each run has a separate repository, repeated task IDs in later runs do not collide. This repository is separate from the Hensei checkout and any source/destination repository; existing destination scaffolding is not copied into the baseline yet.
+
+A task worktree contains snapshots of all transitive prerequisite candidates, committed as a separate base commit. These are provisional dependencies, not evaluator-approved integrations. Conflicting prerequisite files or outputs that overwrite prerequisites fail the task. The worker writes its own generated target files into the worktree root and creates a candidate commit. `tasks/<task-id>/candidate.json` records `branch`, `worktree`, `baseCommit`, and `commit`, allowing a future evaluator to inspect the exact candidate diff. `worktree.json` is written before the model call, so failed task checkouts remain inspectable too.
+
+Shared Git mutations are serialized to avoid lock races; model calls remain concurrent under the configured worker limit. Worktrees and branches are retained for inspection. Git commits prove isolation and record changes; they do not prove code correctness. Worktrees provide checkout isolation, not a sandbox for executing arbitrary code. No generated commands run and no branches merge automatically.
