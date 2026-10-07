@@ -19,7 +19,8 @@ const reply: Complete=async (_system,user)=> {
   return {content:JSON.stringify({id:context.id,goal:'Migrate to Go preserving behavior',prompt:`Translate ${context.files.map((f:{path:string})=>f.path).join(', ')} into Go and validate public behavior.`,files:context.files})};
 };
 test('planner publishes versioned tasks in prerequisite-first order',async()=>fixture(async(root,graphPath,output)=> {
-  const plan=await planTasks({root,graphPath,output,target:'Go',model:'test',complete:reply});
+  const plan=await planTasks({root,graphPath,output,target:'Go',framework:'Gin',version:'1.24',model:'test',complete:async(s,u)=>{const context=JSON.parse(u.split('\n')[0]); expect(context.targetFramework).toBe('Gin'); expect(context.targetVersion).toBe('1.24');return reply(s,u);}});
+  expect(plan.targetFramework).toBe('Gin'); expect(plan.targetVersion).toBe('1.24');
   expect(plan.tasks.map(t=>t.files[0].path)).toEqual(['base.ts','app.ts']);
   expect(plan.tasks[1].dependsOn).toEqual(['task_0001']);
   expect(plan.tasks[0].files[0].version).toMatch(/^sha256:[a-f0-9]{64}$/);

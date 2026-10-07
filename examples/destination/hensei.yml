@@ -1,0 +1,5 @@
+# Set these to your desired migration target.
+target:
+  language: Go
+  version: '1.24'
+  # framework: Gin

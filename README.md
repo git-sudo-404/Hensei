@@ -98,3 +98,35 @@ Each task contains:
 This illustrative task is not a recorded model response. The plan also records target language, source root, model, graph hash, generation timestamp, and unresolved graph warnings. File versions identify the exact input contents rather than a Git branch or modification time. Generated goals/prompts require review before execution; schema validation does not establish migration correctness. Workers and evaluation remain deferred.
 
 The adapter uses DeepSeek's [JSON output mode](https://api-docs.deepseek.com/guides/json_mode/) and validates the response locally.
+
+## Source / destination command
+
+Register the local command once from this checkout:
+
+```sh
+bun install
+bun link
+```
+
+Create a destination directory with `hensei.yml`:
+
+```yaml
+# dest/hensei.yml
+# Language is required; framework and language version are optional.
+target:
+  language: TypeScript
+  framework: Next.js
+  version: '5.9'
+```
+
+Quote version numbers. `version` refers to the target language version. Any language/framework name may be specified; support is a planning instruction, not a guarantee that a future migration worker supports it.
+
+Then run, from a directory containing your `.env`:
+
+```sh
+hensei src/ dest/
+# Without linking:
+bun run start src/ dest/
+```
+
+The destination must already exist, contain `hensei.yml`, and be outside the source directory. Hensei reads the config, extracts the source graph with Graphify, groups cycles, computes dependency layers, and asks DeepSeek to produce versioned tasks for the configured target. It writes graph/order artifacts under `dest/.hensei/` and publishes `dest/tasks.json` only after validation. It does not translate source files in this phase. The standalone `graph`, `order`, and `plan` commands remain available.
