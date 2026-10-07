@@ -3,3 +3,7 @@ target:
   language: Go
   version: '1.24'
   # framework: Gin
+
+# Maximum simultaneously active migration workers
+agents:
+  workers: 3

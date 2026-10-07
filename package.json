@@ -9,7 +9,8 @@
     "plan": "bun src/cli.ts plan",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "start": "bun src/cli.ts"
+    "start": "bun src/cli.ts",
+    "run": "bun src/cli.ts run"
   },
   "devDependencies": {
     "@types/bun": "1.3.10",

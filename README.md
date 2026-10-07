@@ -1,6 +1,6 @@
 # Hensei — Bun / TypeScript
 
-This branch implements repository graph extraction and migration ordering. A DeepSeek planning agent generates versioned tasks. Migration workers, evaluation, and merging are deferred.
+This branch implements repository graph extraction and migration ordering. A DeepSeek planning agent generates versioned tasks. Parallel workers produce migration candidates; evaluation and merging are deferred.
 
 ## Setup
 
@@ -95,7 +95,7 @@ Each task contains:
 }
 ```
 
-This illustrative task is not a recorded model response. The plan also records target language, source root, model, graph hash, generation timestamp, and unresolved graph warnings. File versions identify the exact input contents rather than a Git branch or modification time. Generated goals/prompts require review before execution; schema validation does not establish migration correctness. Workers and evaluation remain deferred.
+This illustrative task is not a recorded model response. The plan also records target language, source root, model, graph hash, generation timestamp, and unresolved graph warnings. File versions identify the exact input contents rather than a Git branch or modification time. Generated goals/prompts require review before execution; schema validation does not establish migration correctness. Parallel workers are available through the run command below; evaluation remains deferred.
 
 The adapter uses DeepSeek's [JSON output mode](https://api-docs.deepseek.com/guides/json_mode/) and validates the response locally.
 
@@ -129,4 +129,37 @@ hensei src/ dest/
 bun run start src/ dest/
 ```
 
-The destination must already exist, contain `hensei.yml`, and be outside the source directory. Hensei reads the config, extracts the source graph with Graphify, groups cycles, computes dependency layers, and asks DeepSeek to produce versioned tasks for the configured target. It writes graph/order artifacts under `dest/.hensei/` and publishes `dest/tasks.json` only after validation. It does not translate source files in this phase. The standalone `graph`, `order`, and `plan` commands remain available.
+The destination must already exist, contain `hensei.yml`, and be outside the source directory. Hensei reads the config, extracts the source graph with Graphify, groups cycles, computes dependency layers, and asks DeepSeek to produce versioned tasks for the configured target. It writes graph/order artifacts under `dest/.hensei/` and publishes `dest/tasks.json` only after validation. It produces the task plan; use the separate run command below to generate migration candidates. The standalone `graph`, `order`, and `plan` commands remain available.
+
+## Parallel migration workers
+
+Set the maximum number of concurrent worker agents in the destination config. Both `hensei.yaml` and `hensei.yml` are supported; having both is an error.
+
+```yaml
+target:
+  language: Go
+agents:
+  workers: 5
+```
+
+After generating `dest/tasks.json`, run:
+
+```sh
+hensei run dest/
+# Or: bun run run dest/
+```
+
+The dispatcher is a deterministic controller, not an extra LLM call. It validates task IDs, dependency cycles and exclusive source ownership, checks every source hash, then maintains a fixed pool of worker slots. Independent ready tasks start together up to `agents.workers` (integer 1–64). Dependents unlock as soon as their own prerequisites succeed, rather than waiting for an entire layer. Failures block descendants; unrelated tasks continue. The limit applies to active task workers, including their model calls and one optional JSON correction attempt.
+
+Each worker has a separate model conversation. Unlike the graph-only planner, **migration workers send assigned source contents and prerequisite candidate code to DeepSeek**. They produce JSON containing target file paths/content and source ownership. The harness checks safe paths, coverage and current source hashes, then saves candidate code in a unique task directory. There are no shell tools, compiler checks or automated correctness claims in this worker yet. File-path validation is not a security sandbox for executing generated code.
+
+Outputs under `dest/.hensei/runs/<run-id>/`:
+
+- `tasks/<task-id>/candidate.json`: candidate manifest.
+- `tasks/<task-id>/files/`: isolated candidate files.
+- `events.jsonl`: timestamped starts/completions/failures and active-worker counts.
+- `report.json`: statuses, configured limit, peak active workers, total duration and `parallelObserved`.
+
+`parallelObserved` means overlapping worker lifetimes were measured, not that DeepSeek's internal GPU computation was observed. A narrow dependency graph may expose fewer ready tasks than the configured capacity. `SUCCEEDED` means a structurally validated candidate was written; it does not mean compilation/tests passed or evaluator approval occurred. Prerequisite candidates remain provisional. Git worktrees, evaluator-driven repair, integration/merging, crash recovery and token budgets are future work. Candidate files are not installed into the destination application, and source files remain untouched.
+
+Every invocation starts a new run rather than resuming an interrupted run. The terminal command exits nonzero if any task failed or was blocked. Planning remains a separate command; `hensei src/ dest/` does not automatically execute workers.

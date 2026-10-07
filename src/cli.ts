@@ -2,7 +2,8 @@
 import { resolve, join } from 'node:path';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { relative } from 'node:path';
-import { parseConfig } from './config';
+import { loadConfig } from './config';
+import { executeTasks } from './execution';
 import { extractGraph, GRAPHIFY_VERSION } from './graphify';
 import { projectGraph } from './graph';
 import { buildLayers } from './layers';
@@ -10,7 +11,13 @@ import { planTasks, deepseekComplete } from './planner';
 
 async function main() {
   const [command, ...args] = Bun.argv.slice(2);
-  if (command && !['graph','order','plan','--help'].includes(command)) {
+  if (command === 'run') {
+    if (args.length!==1) throw new Error('Usage: hensei run <destination>');
+    const {report}=await executeTasks(resolve(args[0]),{onProgress:console.log});
+    if (Object.values(report.statuses).some(status=>status==='FAILED'||status==='BLOCKED')) process.exitCode=1;
+    return;
+  }
+  if (command && !['graph','order','plan','run','--help'].includes(command)) {
     if (args.length !== 1 || command.startsWith('--')) throw new Error('Usage: hensei <source-directory> <destination-directory>');
     const root = await realpath(resolve(command));
     if (!(await stat(root)).isDirectory()) throw new Error('Source must be a directory');
@@ -18,9 +25,7 @@ async function main() {
     if (!(await stat(destination)).isDirectory()) throw new Error('Destination must be a directory containing hensei.yml');
     const relation = relative(root,destination);
     if (!relation || (!relation.startsWith('..') && !relation.startsWith('/'))) throw new Error('Destination must be outside the source directory to avoid indexing generated artifacts');
-    const configPath = join(destination,'hensei.yml');
-    if (!await Bun.file(configPath).exists()) throw new Error(`Create ${configPath} with target.language before running Hensei`);
-    const target = parseConfig(await Bun.file(configPath).text());
+    const target = await loadConfig(destination);
     const model = process.env.DEEPSEEK_MODEL || 'deepseek-flash';
     const complete = deepseekComplete(process.env.DEEPSEEK_API_KEY || '',model);
     const graphPath = await extractGraph(root,join(destination,'.hensei'));
@@ -53,7 +58,7 @@ async function main() {
     return;
   }
   if (!command || command === '--help') {
-    console.log('hensei <source-directory> <destination-directory>\nbun run graph <repo> [--out <directory>]\nbun run order <graph.json> --root <repo> [--out <directory>]\nbun run plan <graph.json> --root <repo> --target <language> [--out <tasks.json>] [--model <model>]'); return;
+    console.log('hensei run <destination-directory>\nhensei <source-directory> <destination-directory>\nbun run graph <repo> [--out <directory>]\nbun run order <graph.json> --root <repo> [--out <directory>]\nbun run plan <graph.json> --root <repo> --target <language> [--out <tasks.json>] [--model <model>]'); return;
   }
   if (command !== 'graph' && command !== 'order') throw new Error(`Unknown command: ${command}`);
   const input = args.shift();
