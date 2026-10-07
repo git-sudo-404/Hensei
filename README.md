@@ -1,6 +1,6 @@
 # Hensei — Bun / TypeScript
 
-This branch implements repository graph extraction and migration ordering. A DeepSeek planning agent generates versioned tasks. Parallel workers produce migration candidates; evaluation and merging are deferred.
+This branch implements repository graph extraction and migration ordering. A DeepSeek planning agent generates versioned tasks. Parallel workers produce candidates; an evaluator reviews them, runs required checks, and merges passing changes.
 
 ## Setup
 
@@ -95,7 +95,7 @@ Each task contains:
 }
 ```
 
-This illustrative task is not a recorded model response. The plan also records target language, source root, model, graph hash, generation timestamp, and unresolved graph warnings. File versions identify the exact input contents rather than a Git branch or modification time. Generated goals/prompts require review before execution; schema validation does not establish migration correctness. Parallel workers are available through the run command below; evaluation remains deferred.
+This illustrative task is not a recorded model response. The plan also records target language, source root, model, graph hash, generation timestamp, and unresolved graph warnings. File versions identify the exact input contents rather than a Git branch or modification time. Generated goals/prompts require review before execution; schema validation does not establish migration correctness. Parallel workers are available through the run command below; evaluation and integration are part of the run command.
 
 The adapter uses DeepSeek's [JSON output mode](https://api-docs.deepseek.com/guides/json_mode/) and validates the response locally.
 
@@ -149,9 +149,9 @@ hensei run dest/
 # Or: bun run run dest/
 ```
 
-The dispatcher is a deterministic controller, not an extra LLM call. It validates task IDs, dependency cycles and exclusive source ownership, checks every source hash, then maintains a fixed pool of worker slots. Independent ready tasks start together up to `agents.workers` (integer 1–64). Dependents unlock as soon as their own prerequisites succeed, rather than waiting for an entire layer. Failures block descendants; unrelated tasks continue. The limit applies to active task workers, including their model calls and one optional JSON correction attempt.
+The dispatcher is a deterministic controller, not an extra LLM call. It validates task IDs, dependency cycles and exclusive source ownership, checks every source hash, then maintains a fixed pool of worker slots. Independent ready tasks start together up to `agents.workers` (integer 1–64). Dependents unlock as soon as their own prerequisites are evaluator-approved and integrated, rather than waiting for an entire layer. Failures block descendants; unrelated tasks continue. The limit applies to active task workers, including their model calls and one optional JSON correction attempt.
 
-Each worker has a separate model conversation and a real Git worktree on a branch named exactly after its task ID. Unlike the graph-only planner, **migration workers send assigned source contents and prerequisite candidate code to DeepSeek**. They produce JSON containing target file paths/content and source ownership. The harness checks safe paths, coverage and current source hashes, then commits candidate code in that task’s worktree. There are no shell tools, compiler checks or automated correctness claims in this worker yet. File-path validation is not a security sandbox for executing generated code.
+Each worker has a separate model conversation and a real Git worktree on a branch named exactly after its task ID. Unlike the graph-only planner, **migration workers send assigned source contents and prerequisite candidate code to DeepSeek**. They produce JSON containing target file paths/content and source ownership. The harness checks safe paths, coverage and current source hashes, then commits candidate code in that task’s worktree. Workers have no shell tools. The evaluator runs the user-configured build/test commands; model approval alone never permits integration. File-path validation is not a security sandbox for executing generated code.
 
 Outputs under `dest/.hensei/runs/<run-id>/`:
 
@@ -160,7 +160,7 @@ Outputs under `dest/.hensei/runs/<run-id>/`:
 - `events.jsonl`: timestamped starts/completions/failures and active-worker counts.
 - `report.json`: statuses, configured limit, peak active workers, total duration and `parallelObserved`.
 
-`parallelObserved` means overlapping worker lifetimes were measured, not that DeepSeek's internal GPU computation was observed. A narrow dependency graph may expose fewer ready tasks than the configured capacity. `SUCCEEDED` means a structurally validated candidate was written; it does not mean compilation/tests passed or evaluator approval occurred. Prerequisite candidates remain provisional. Evaluator-driven repair, integration/merging, crash recovery and token budgets are future work. Candidate files are not installed into the destination application, and source files remain untouched.
+`parallelObserved` means overlapping worker lifetimes were measured, not that DeepSeek's internal GPU computation was observed. A narrow dependency graph may expose fewer ready tasks than the configured capacity. `SUCCEEDED` now means evaluator approval, passing required checks on the latest integration tree, and a completed merge. Crash recovery and token budgets remain future work. Candidate files are not installed into the destination application, and source files remain untouched.
 
 Every invocation starts a new run rather than resuming an interrupted run. The terminal command exits nonzero if any task failed or was blocked. Planning remains a separate command; `hensei src/ dest/` does not automatically execute workers.
 
@@ -169,6 +169,33 @@ Every invocation starts a new run rather than resuming an interrupted run. The t
 
 Each run initializes its own Git repository at `.hensei/runs/<run-id>/repo/`, with an empty `integration` baseline. It creates worktrees at `worktrees/<task-id>/` and branches named exactly `task_0001`, etc. Because each run has a separate repository, repeated task IDs in later runs do not collide. This repository is separate from the Hensei checkout and any source/destination repository; existing destination scaffolding is not copied into the baseline yet.
 
-A task worktree contains snapshots of all transitive prerequisite candidates, committed as a separate base commit. These are provisional dependencies, not evaluator-approved integrations. Conflicting prerequisite files or outputs that overwrite prerequisites fail the task. The worker writes its own generated target files into the worktree root and creates a candidate commit. `tasks/<task-id>/candidate.json` records `branch`, `worktree`, `baseCommit`, and `commit`, allowing a future evaluator to inspect the exact candidate diff. `worktree.json` is written before the model call, so failed task checkouts remain inspectable too.
+A task worktree starts from the current integration branch. Its dependencies must already be evaluator-approved and merged; prerequisite snapshots are checked against the integrated contents. Conflicting prerequisite files or outputs that overwrite prerequisites fail the task. The worker writes its own generated target files into the worktree root and creates a candidate commit. `tasks/<task-id>/candidate.json` records `branch`, `worktree`, `baseCommit`, and `commit`, allowing a future evaluator to inspect the exact candidate diff. `worktree.json` is written before the model call, so failed task checkouts remain inspectable too.
 
-Shared Git mutations are serialized to avoid lock races; model calls remain concurrent under the configured worker limit. Worktrees and branches are retained for inspection. Git commits prove isolation and record changes; they do not prove code correctness. Worktrees provide checkout isolation, not a sandbox for executing arbitrary code. No generated commands run and no branches merge automatically.
+Shared Git mutations are serialized to avoid lock races; model calls remain concurrent under the configured worker limit. Worktrees and branches are retained for inspection. Git commits prove isolation and record changes; they do not prove code correctness. Worktrees provide checkout isolation, not a sandbox for executing arbitrary code. Only user-configured check commands run. Passing candidates merge automatically into the run’s integration branch.
+
+
+## Evaluator, repair and integration
+
+Execution requires both build and test commands in destination `hensei.yaml`/`hensei.yml`. Commands are argument arrays, not model-generated shell strings:
+
+```yaml
+target:
+  language: Go
+agents:
+  workers: 5
+evaluation:
+  build: [go, build, ./...]
+  test: [go, test, ./...]
+  timeoutSeconds: 60
+  maxAttempts: 2
+```
+
+Configure commands for the actual target project, including its module/package setup. Hensei does not auto-generate a universal test suite. An example JavaScript-to-TypeScript evaluator configuration with compilation and arithmetic behavior checks is provided at `examples/evaluation/hensei.yaml`. These checks execute locally, outside a container; worktrees are checkout isolation, not execution sandboxes. The harness omits credential-like environment variables from check processes and bounds their captured output.
+
+A dedicated, serial evaluator conversation compares original source, target code, task requirements and dependency candidates for logical errors. It emits an explicit JSON approval/rejection with reasons. This is a model judgment, not a proof of equivalence. Approval is followed by a real Git merge into a temporary worktree based on the **latest** integration HEAD; both configured checks run on that combined tree. Dirty checkouts, changed source versions, unexpected candidate diffs, merge conflicts, failed commands and timeouts prevent promotion. Only the exact clean tested merge commit is fast-forwarded into the run’s integration branch. Failed evaluation checkouts remain for inspection.
+
+Rejected candidates return feedback to their original worker, which retries up to `maxAttempts` (1–5, default 2). Repair resets only that task branch to its recorded base and replaces the task's output; unrelated accepted changes are untouched. After the limit, the task fails and its dependents block. Merge operations and evaluator reviews are serialized, while other migration workers remain parallel.
+
+After each successful merge, `file-versions.json` in the run directory atomically records accepted target-file SHA-256 hashes, originating task IDs and integration commits. Original source-file hashes in `tasks.json` are unchanged: they continue to identify the migration input. Per-task `evaluation-<attempt>.json` records the model verdict, build/test output, final approval and merge commit.
+
+Merges occur inside the isolated run repository at `.hensei/runs/<run-id>/repo/`, not in the Hensei application's main branch or the user's existing destination repository. The integrated target tree is available there; deployment into the destination root remains separate. Version metadata and Git history are retained for inspection. Interrupted-run recovery and transactional recovery from filesystem failures after a merge are not implemented yet.

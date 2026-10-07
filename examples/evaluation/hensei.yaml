@@ -1,0 +1,9 @@
+target:
+  language: TypeScript
+agents:
+  workers: 2
+evaluation:
+  build: [bun, -e, 'const files=[...new Bun.Glob("**/*.ts").scanSync(".")]; if(!files.length)throw new Error("No TypeScript files"); const result=await Bun.build({entrypoints:files.map(f=>"./"+f),target:"bun"}); if(!result.success)throw new Error("Compilation failed");']
+  test: [bun, -e, 'const files=[...new Bun.Glob("**/*.ts").scanSync(".")]; const modules=await Promise.all(files.map(f=>import("./"+f))); const m=modules.find(m=>typeof m.add==="function"); if(!m)throw new Error("Missing add export"); for(const [a,b] of [[2,3],[-2,3],[0,0],[0.1,0.2],[Infinity,1]])if(!Object.is(m.add(a,b),a+b))throw new Error("add behavior mismatch");']
+  timeoutSeconds: 30
+  maxAttempts: 2

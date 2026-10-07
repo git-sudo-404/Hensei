@@ -6,10 +6,12 @@ import {deepseekComplete,type Complete,type TaskPlan} from './planner';
 import {dispatch,validateTasks,type DispatchReport} from './dispatcher';
 import {migrationWorker,readVersionedSource} from './worker';
 import {WorktreeManager} from './worktrees';
-export async function executeTasks(destination:string,options:{complete?:Complete;onProgress?:(message:string)=>void}={}):Promise<{runDir:string;report:DispatchReport}> {
+import {Evaluator} from './evaluator';
+export async function executeTasks(destination:string,options:{complete?:Complete;evaluatorComplete?:Complete;onProgress?:(message:string)=>void}={}):Promise<{runDir:string;report:DispatchReport}> {
   destination=await realpath(destination);
   const config=await loadConfig(destination);
   if (config.workers===undefined) throw new Error('Set agents.workers in destination config before executing tasks');
+  if(!config.evaluation)throw new Error('Set evaluation.build and evaluation.test command arrays before running');
   const plan=await Bun.file(join(destination,'tasks.json')).json() as TaskPlan;
   validateTasks(plan);
   if (config.language!==plan.targetLanguage || config.framework!==plan.targetFramework || config.version!==plan.targetVersion) throw new Error('Config target differs from tasks.json; regenerate the plan');
@@ -22,11 +24,12 @@ export async function executeTasks(destination:string,options:{complete?:Complet
   await Bun.write(join(runDir,'tasks.json'),JSON.stringify(plan,null,2)+'\n');
   const worktrees=new WorktreeManager(runDir);
   await worktrees.initialize();
-  const report=await dispatch(plan,config.workers,migrationWorker(plan,runDir,complete,worktrees),event=> {
+  const evaluator=new Evaluator(plan,runDir,config.evaluation,options.evaluatorComplete??complete,worktrees);
+  const report=await dispatch(plan,config.workers,migrationWorker(plan,runDir,complete,worktrees,evaluator,config.evaluation.maxAttempts),event=> {
     appendFileSync(join(runDir,'events.jsonl'),JSON.stringify(event)+'\n');
     options.onProgress?.(`${event.type} ${event.taskId} worker=${event.workerId??'-'} active=${event.activeWorkers}/${config.workers}`);
   });
-  await Bun.write(join(runDir,'report.json'),JSON.stringify({...report,model,candidateOnly:true,repository:worktrees.repo},null,2)+'\n');
+  await Bun.write(join(runDir,'report.json'),JSON.stringify({...report,model,candidateOnly:false,repository:worktrees.repo},null,2)+'\n');
   options.onProgress?.(`Peak workers: ${report.peakActiveWorkers}/${report.limit}; overlap observed: ${report.parallelObserved}. Report: ${join(runDir,'report.json')}`);
   return {runDir,report};
 }

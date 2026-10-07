@@ -10,7 +10,7 @@ test('execution creates isolated candidates and truthful concurrency report from
   const root=await mkdtemp(join(tmpdir(),'hensei-exec-'));
   try {
     const destination=join(root,'dest');await mkdir(destination);
-    await Bun.write(join(destination,'hensei.yaml'),'target:\n  language: Go\nagents:\n  workers: 2');
+    await Bun.write(join(destination,'hensei.yaml'),'target:\n  language: Go\nagents:\n  workers: 2\nevaluation:\n  build: [bun, --version]\n  test: [bun, --version]');
     const tasks:Task[]=[];
     for (const id of ['task_a','task_b','task_c']) {
       const content=`export const ${id}=1;`,path=`${id}.ts`;
@@ -28,10 +28,10 @@ test('execution creates isolated candidates and truthful concurrency report from
       if(context.task.id!=='task_c') {if(calls===2)release();await bothWorkers;}active--;
       return {content:JSON.stringify({taskId:context.task.id,summary:'Candidate',files:[{path:`${context.task.id}.go`,content:'package migrated\n',sourcePaths:context.task.files.map((f:{path:string})=>f.path)}]})};
     };
-    const {report,runDir}=await executeTasks(destination,{complete});
+    const {report,runDir}=await executeTasks(destination,{complete,evaluatorComplete:async()=>({content:JSON.stringify({approved:true,reasons:['Fixture review']})})});
     expect(calls).toBe(3);expect(peak).toBe(2);expect(report.limit).toBe(2);expect(report.parallelObserved).toBe(true);
     expect((await Bun.file(join(runDir,'events.jsonl')).text()).trim().split('\n').length).toBe(6);
-    expect((await Bun.file(join(runDir,'report.json')).json()).candidateOnly).toBe(true);
+    expect((await Bun.file(join(runDir,'report.json')).json()).candidateOnly).toBe(false);
     for(const task of tasks)expect(await Bun.file(join(runDir,'worktrees',task.id,`${task.id}.go`)).exists()).toBe(true);
     expect(await Bun.file(join(destination,'task_a.go')).exists()).toBe(false);
     for (const task of tasks) {
@@ -45,8 +45,9 @@ test('execution creates isolated candidates and truthful concurrency report from
     expect(await Bun.file(join(runDir,'worktrees','task_c','task_a.go')).exists()).toBe(true);
     expect(await Bun.file(join(runDir,'worktrees','task_c','task_b.go')).exists()).toBe(true);
     expect(await Bun.file(join(runDir,'worktrees','task_a','task_b.go')).exists()).toBe(false);
+    const versions=await Bun.file(join(runDir,'file-versions.json')).json();expect(Object.keys(versions.files).sort()).toEqual(['task_a.go','task_b.go','task_c.go']);
     const baseline=Bun.spawn(['git','ls-tree','--name-only','HEAD'],{cwd:join(runDir,'repo'),stdout:'pipe'});
-    expect((await new Response(baseline.stdout).text()).trim()).toBe('');expect(await baseline.exited).toBe(0);
+    expect((await new Response(baseline.stdout).text()).trim().split('\n').sort()).toEqual(['task_a.go','task_b.go','task_c.go']);expect(await baseline.exited).toBe(0);
     const failed=await executeTasks(destination,{complete:async()=>{throw new Error('Provider failure');}});
     expect(failed.runDir).not.toBe(runDir);
     expect(failed.report.statuses).toEqual({task_a:'FAILED',task_b:'FAILED',task_c:'BLOCKED'});

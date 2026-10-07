@@ -11,3 +11,7 @@ test('config accepts bounded worker limit and rejects invalid limits',()=> {
   expect(parseConfig('target:\n  language: Go\nagents:\n  workers: 5').workers).toBe(5);
   for (const value of ['0','-1','1.5','65','"5"'])expect(()=>parseConfig(`target:\n  language: Go\nagents:\n  workers: ${value}`)).toThrow();
 });
+test('evaluation requires separate build/test argv and bounded attempts',()=> {
+  expect(parseConfig('target:\n  language: Go\nevaluation:\n  build: [go, build, ./...]\n  test: [go, test, ./...]').evaluation?.maxAttempts).toBe(2);
+  for(const extra of ['build: "go build"\n  test: [go, test]','build: [go, build]','build: [go, build]\n  test: [go, test]\n  maxAttempts: 0'])expect(()=>parseConfig(`target:\n  language: Go\nevaluation:\n  ${extra}`)).toThrow();
+});

@@ -7,3 +7,11 @@ target:
 # Maximum simultaneously active migration workers
 agents:
   workers: 3
+
+# Required build/test commands for evaluation. Go projects need a coherent
+# package layout and module setup; override these for your actual project.
+evaluation:
+  build: [go, build, ./...]
+  test: [go, test, ./...]
+  timeoutSeconds: 60
+  maxAttempts: 2
