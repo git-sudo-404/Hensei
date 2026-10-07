@@ -1,6 +1,6 @@
 # Hensei — Bun / TypeScript
 
-This branch implements repository graph extraction and migration ordering. Task-generation agents, migration workers, evaluation, and merging are deferred.
+This branch implements repository graph extraction and migration ordering. A DeepSeek planning agent generates versioned tasks. Migration workers, evaluation, and merging are deferred.
 
 ## Setup
 
@@ -41,11 +41,11 @@ Separate groups in a layer can be scheduled in parallel with respect to the extr
 
 - `graphify-out/graph.json`: untouched upstream extraction.
 - `file-graph.json`: normalized files, dependencies, and warnings.
-- `migration-order.json`: group IDs, files, `cyclic`, `dependsOn`, and ordered layers. This is input for the future planning agent, not `tasks.json`.
+- `migration-order.json`: group IDs, files, `cyclic`, `dependsOn`, and ordered layers. This is the deterministic group order; the separate planner command generates `tasks.json`.
 
 ## Limits
 
-Language coverage follows Graphify's extractors. Dynamic imports, reflection, generated code, and unresolved references can leave dependencies missing. Files absent from Graphify's nodes are not scheduled. This is a rough static plan, not a correctness guarantee or execution engine. Review unresolved-edge warnings before migration. No RAG or LLM calls are implemented in this phase.
+Language coverage follows Graphify's extractors. Dynamic imports, reflection, generated code, and unresolved references can leave dependencies missing. Files absent from Graphify's nodes are not scheduled. This is a rough static plan, not a correctness guarantee or execution engine. Review unresolved-edge warnings before migration. Graph extraction uses no RAG or LLM calls; the separate planner uses DeepSeek.
 
 The previous Python implementation is preserved in Git history at commit `be9c710`; `main` now contains the Bun/TypeScript implementation. Historical research and ignored run artifacts remain on disk. `.env` stays local and ignored; the graph pipeline needs no DeepSeek key.
 
@@ -57,3 +57,44 @@ bun run typecheck
 ```
 
 Tests cover fan-in, cycles, disconnected components, self-loops, duplicate edges, deterministic output, malformed/undirected graphs, a 15,000-file chain, and recorded real Graphify extraction of the cycle example.
+
+## DeepSeek task planner
+
+Put your key in the workspace `.env` (Bun loads it automatically):
+
+```dotenv
+DEEPSEEK_API_KEY=your_key_here
+# Optional; CLI --model takes precedence
+DEEPSEEK_MODEL=deepseek-flash
+```
+
+Generate tasks from the raw Graphify graph:
+
+```sh
+bun run plan artifacts/cyclic/graphify-out/graph.json \
+  --root examples/cyclic --target Go --out artifacts/cyclic/tasks.json
+```
+
+Use the repository's actual path and your desired target language for other runs. Extraction and planning are separate steps; rerun graph extraction after changing source files.
+
+One planning agent uses a separate DeepSeek JSON-mode call for each SCC group in layer order. It receives that group's graph neighborhood, file names, SHA-256 versions, dependency edges, and accepted prerequisite task summaries. File contents are read locally to hash and detect changes, but are not included in the API payload. The supplied Graphify metadata is sent to DeepSeek. This graph-only planner cannot infer implementation behavior that the graph does not represent.
+
+The model writes `goal` and `prompt`; Hensei validates the echoed assigned ID and files, then attaches authoritative dependencies and layer information. Cycle groups remain indivisible. Invalid JSON/IDs/paths/hashes allow one correction attempt. API failures stop immediately without automatic request retries; each request has a 120-second deadline. Inputs over 180 KB per group fail before any request, rather than silently truncating context. Existing output is replaced atomically only after every task validates and all source versions are unchanged.
+
+Each task contains:
+
+```json
+{
+  "id": "task_0001",
+  "groupId": "group_0003",
+  "layer": 0,
+  "goal": "Migrate the base module to Go while preserving its public interface",
+  "prompt": "Translate the assigned module to Go; preserve exported names and behavior, and validate the resulting implementation.",
+  "files": [{"path": "base.ts", "version": "sha256:<64 hexadecimal characters>"}],
+  "dependsOn": []
+}
+```
+
+This illustrative task is not a recorded model response. The plan also records target language, source root, model, graph hash, generation timestamp, and unresolved graph warnings. File versions identify the exact input contents rather than a Git branch or modification time. Generated goals/prompts require review before execution; schema validation does not establish migration correctness. Workers and evaluation remain deferred.
+
+The adapter uses DeepSeek's [JSON output mode](https://api-docs.deepseek.com/guides/json_mode/) and validates the response locally.

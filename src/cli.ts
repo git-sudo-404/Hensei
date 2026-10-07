@@ -3,11 +3,32 @@ import { mkdir } from 'node:fs/promises';
 import { extractGraph, GRAPHIFY_VERSION } from './graphify';
 import { projectGraph } from './graph';
 import { buildLayers } from './layers';
+import { planTasks, deepseekComplete } from './planner';
 
 async function main() {
   const [command, ...args] = Bun.argv.slice(2);
+  if (command === 'plan') {
+    const graphPath = args.shift();
+    if (!graphPath || graphPath.startsWith('--')) throw new Error('plan requires a Graphify graph.json path');
+    let root: string | undefined, target: string | undefined;
+    let output = resolve('artifacts/tasks.json'), model = process.env.DEEPSEEK_MODEL || 'deepseek-flash';
+    while (args.length) {
+      const flag = args.shift(), value = args.shift();
+      if (!value || value.startsWith('--')) throw new Error(`Missing value for ${flag}`);
+      if (flag === '--root') root = resolve(value);
+      else if (flag === '--target') target = value;
+      else if (flag === '--out') output = resolve(value);
+      else if (flag === '--model') model = value;
+      else throw new Error(`Unknown option: ${flag}`);
+    }
+    if (!root || !target) throw new Error('plan requires --root <repository> and --target <language>');
+    const complete = deepseekComplete(process.env.DEEPSEEK_API_KEY || '',model);
+    const plan = await planTasks({graphPath:resolve(graphPath),root,target,output,model,complete,onProgress:console.log});
+    console.log(`Saved ${plan.tasks.length} validated tasks to ${output}`);
+    return;
+  }
   if (!command || command === '--help') {
-    console.log('bun run graph <repo> [--out <directory>]\nbun run order <graph.json> --root <repo> [--out <directory>]'); return;
+    console.log('bun run graph <repo> [--out <directory>]\nbun run order <graph.json> --root <repo> [--out <directory>]\nbun run plan <graph.json> --root <repo> --target <language> [--out <tasks.json>] [--model <model>]'); return;
   }
   if (command !== 'graph' && command !== 'order') throw new Error(`Unknown command: ${command}`);
   const input = args.shift();
